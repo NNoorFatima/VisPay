@@ -1,0 +1,36 @@
+# Python cache and bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+.python-version
+
+# Environment variables
+*.env
+.env
+
+# Logs
+*.log
+logs/
+*.out
+
+# Uploads and processed files
+uploads/
+processed/
+static/product_images
+archive/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE/project settings
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace

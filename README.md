@@ -1,52 +1,187 @@
-# VisPay Vision: A Dual Image Intelligence System for Payment Verification and Visual Product Search in Live Commerce
-## Overview
+# VisPay Vision API
 
-VisPay Vision is an intelligent digital image processing solution for live commerce platforms. It addresses two major operational challenges faced by sellers:
+A FastAPI-based dual image intelligence system for payment verification and visual product search in live commerce platforms.
 
-1. Manual verification of payment receipts.
-2. Difficulty identifying products from customer-uploaded images.
+## Features
 
-This project combines OCR-based payment verification and Visual Product Search using feature matching. Currently, the Visual Product Search module has been fully implemented.
+### 1. Payment Receipt Verification (OCR)
 
-## Features Implemented
-### Visual Product Search Module
+- Extract transaction ID, amount, and date from payment receipts
+- Support for both pytesseract and EasyOCR
+- Batch processing capability
+- Multiple preprocessing techniques for better accuracy
 
-The Visual Product Search allows sellers to quickly identify products from customer-uploaded images during live chat or streaming sessions. The implemented pipeline includes:
+### 2. Visual Product Search
 
-1. Feature Extraction with SIFT:# VisPay Vision: A Dual Image Intelligence System for Payment Verification and Visual Product Search in Live Commerce
+- SIFT-based feature extraction for robust image matching
+- FLANN-based feature matching with Lowe's ratio test
+- Top-K product retrieval with similarity scores
+- Scale and rotation invariant matching
 
-## Overview
+## Project Structure
 
-VisPay Vision is an intelligent digital image processing solution for live commerce platforms. It addresses two major operational challenges faced by sellers:
+```
+VisPay/
+├── main.py                 # FastAPI application entry point
+├── config.py               # Configuration management
+├── requirements.txt        # Python dependencies
+├── .env.example           # Environment variables template
+├── models/
+│   └── schemas.py         # Pydantic models for request/response
+├── modules/
+│   ├── preprocessing.py   # Image preprocessing utilities
+│   ├── ocr_verification.py # OCR and receipt parsing logic
+│   └── visual_search.py   # Visual search implementation
+├── routes/
+│   ├── payment.py         # Payment verification endpointsV
+│   └── product.py         # Product search endpoints
+├── static/
+│   └── product_images/    # Inventory product images
+└── uploads/               # Temporary upload directory
+```
 
-1. Manual verification of payment receipts.
-2. Difficulty identifying products from customer-uploaded images.
+## Prerequisites
 
-This project combines OCR-based payment verification and Visual Product Search using feature matching. Currently, the Visual Product Search module has been fully implemented.
+See [PREREQUISITES.md](PREREQUISITES.md) for detailed system requirements and setup instructions.
 
-## Features Implemented
+**Quick Checklist:**
 
-### Visual Product Search Module
+- Python 3.8+
+- Tesseract OCR installed
+- Virtual environment (recommended)
 
-The Visual Product Search allows sellers to quickly identify products from customer-uploaded images during live chat or streaming sessions. The implemented pipeline includes:
+## Installation
 
-1. **Feature Extraction with SIFT**
-   - Detects keypoints using **SIFT (Scale-Invariant Feature Transform)**.
-   - Generates descriptors that are invariant to scale, rotation, and minor lighting changes.
+1. **Navigate to project directory**
 
-2. **Feature Matching**
-   - Uses **Brute Force** or **FLANN-based matcher** to compare query images against inventory images.
-   - Computes similarity scores to find the most visually similar products.
+   ```bash
+   cd VisPay
+   ```
 
-3. **Top-K Retrieval and Visualization**
-   - Ranks products based on similarity scores.
-   - Displays top matches visually for quick verification by the seller.
+2. **Create virtual environment**
 
-  - Detects keypoints using SIFT (Scale-Invariant Feature Transform).
-  - Generates descriptors that are invariant to scale, rotation, and minor lighting changes.
-2. Feature Matching:
-  * Uses Brute Force or FLANN-based matcher to compare query images against inventory images.
-  * Computes similarity scores to find the most visually similar products.
-3. Top-K Retrieval and Visualization:
-- Ranks products based on similarity scores.
-- Displays top matches visually for quick verification by the seller.
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   ```
+
+3. **Install dependencies**
+
+   ```bash
+   pip install --upgrade pip
+   pip install -r requirements.txt
+   ```
+
+4. **Install Tesseract OCR** (if using pytesseract)
+
+   - **Windows**: Download from [GitHub](https://github.com/UB-Mannheim/tesseract/wiki)
+   - **Linux**: `sudo apt-get install tesseract-ocr`
+   - **Mac**: `brew install tesseract`
+
+5. **Configure environment variables**
+
+   Create `.env` file in project root:
+
+   ```env
+   TESSERACT_CMD=C:\Users\Noor\AppData\Local\Programs\Tesseract-OCR\tesseract.exe
+   USE_EASYOCR=false
+   INVENTORY_DIR=static/product_images
+   ```
+
+## Configuration
+
+Create a `.env` file in the root directory with the following variables:
+
+```env
+# Server Settings
+HOST=0.0.0.0
+PORT=8000
+DEBUG=false
+
+# OCR Settings
+TESSERACT_CMD=C:\Program Files\Tesseract-OCR\tesseract.exe  # Windows example
+USE_EASYOCR=false  # Set to true to use EasyOCR
+
+# Visual Search Settings
+INVENTORY_DIR=static/product_images
+
+# File Upload Settings
+UPLOAD_DIR=uploads
+MAX_UPLOAD_SIZE=10485760
+```
+
+## Running the Application
+
+```bash
+python main.py
+```
+
+Or using uvicorn directly:
+
+```bash
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+
+The API will be available at:
+
+- API: `http://localhost:8000`
+- Interactive Docs: `http://localhost:8000/docs`
+- ReDoc: `http://localhost:8000/redoc`
+
+## API Endpoints
+
+### Payment Verification
+
+#### POST `/api/v1/payment/verify`
+
+Upload a payment receipt image for OCR verification.
+
+**Request:**
+
+- `receipt_image`: Image file (multipart/form-data)
+
+**Response:**
+
+```json
+{
+  "transaction_id": "INV-12345",
+  "amount": "99.99",
+  "date": "2024-01-15",
+  "verification_status": "verified",
+  "extraction_method": "pytesseract"
+}
+```
+
+#### POST `/api/v1/payment/verify-batch`
+
+Verify multiple payment receipts at once.
+
+**Request:**
+
+- `receipts`: List of image files (multipart/form-data)
+
+### Product Search
+
+#### POST `/api/v1/product/search`
+
+Search for similar products using visual matching.
+
+**Request:**
+
+- `query_image`: Product image file (multipart/form-data)
+- `top_k`: Number of top matches (query parameter, default: 5, max: 20)
+
+**Response:**
+
+```json
+{
+  "matches": [
+    {
+      "product_image": "product1.jpg",
+      "similarity_score": 230,
+      "match_confidence": 100
+    }
+  ],
+  "total_matches": 1
+}
+```
