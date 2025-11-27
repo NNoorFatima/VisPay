@@ -37,14 +37,21 @@ class ReceiptVerificationResponse(BaseModel):
 class ProductMatch(BaseModel):
     """Model for a product match result."""
     product_image: str = Field(..., description="Filename of matched product image")
+    product_image_url: Optional[str] = Field(None, description="URL for matched inventory image")
+    feature_method: Optional[str] = Field(None, description="Feature extractor used (SIFT/ORB)")
     similarity_score: int = Field(..., description="Number of feature matches")
     match_confidence: int = Field(..., description="Confidence percentage (0-100)")
+    color_similarity: Optional[float] = Field(None, description="Color similarity percentage (0-100)")
 
 
 class ProductSearchResponse(BaseModel):
     """Response model for product search."""
     matches: List[ProductMatch] = Field(..., description="List of top matching products")
     total_matches: int = Field(..., description="Total number of matches found")
+    query_image_path: Optional[str] = Field(None, description="Disk path to saved query image")
+    query_image_url: Optional[str] = Field(None, description="URL to access the uploaded query image")
+    query_processed_image_path: Optional[str] = Field(None, description="Disk path to preprocessed query image")
+    query_processed_image_url: Optional[str] = Field(None, description="URL to access the preprocessed query image")
 
 
 class BatchVerificationItem(BaseModel):

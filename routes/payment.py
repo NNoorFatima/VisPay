@@ -17,6 +17,7 @@ from config import settings
 
 router = APIRouter(prefix="/api/v1/payment", tags=["Payment Verification"])
 
+# Initialize EasyOCR reader if enabled
 _easyocr_reader = None
 
 
@@ -49,15 +50,31 @@ async def verify_payment(
         description="Preprocessing method: minimal, light, medium, advanced, morphology, scale_aware, or 'auto' (default: auto if OCR_AUTO_PREPROCESSING is enabled)"
     )
 ):
+    """
+    Upload a payment receipt image for OCR verification.
+    Returns: transaction_id, amount, date, and verification status
+    
+    Preprocessing methods:
+    - auto: Automatically select based on image quality (default if enabled)
+    - minimal: Just grayscale + sharpening (best for clear images)
+    - light: Grayscale + contrast enhancement + light denoising
+    - medium: Light + adaptive thresholding
+    - advanced: Denoising + OTSU thresholding (for noisy images)
+    - morphology: Advanced + morphological operations (for broken text)
+    - scale_aware: Upscales image before processing (for small images)
+    
+    If no method is specified and OCR_AUTO_PREPROCESSING=true, the system will
+    automatically analyze the image and select the best preprocessing method.
+    """
     try:
         # Convert upload to cv2 image
         img = await upload_to_cv2(receipt_image)
         
-        # easyocr reader if enabled
+        # Get EasyOCR reader if enabled
         reader = get_easyocr_reader()
         use_easyocr = settings.USE_EASYOCR and reader is not None
         
-        # ocrR verification with optional preprocessing method override
+        # Run OCR verification with optional preprocessing method override
         result = verify_payment_receipt(
             img, 
             use_easyocr=use_easyocr, 
@@ -70,7 +87,7 @@ async def verify_payment(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-#ignore for now (will use this later)
+
 @router.post("/verify-batch", response_model=BatchVerificationResponse)
 async def batch_verify(receipts: List[UploadFile] = File(...)):
     """

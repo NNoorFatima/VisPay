@@ -39,6 +39,14 @@ processed_dir = Path(settings.PROCESSED_DIR)
 processed_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/processed", StaticFiles(directory=str(processed_dir)), name="processed")
 
+inventory_dir = Path(settings.INVENTORY_DIR)
+inventory_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/inventory", StaticFiles(directory=str(inventory_dir)), name="inventory")
+
+uploads_dir = Path(settings.UPLOAD_DIR)
+uploads_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=str(uploads_dir)), name="uploads")
+
 
 @app.get("/")
 def root():

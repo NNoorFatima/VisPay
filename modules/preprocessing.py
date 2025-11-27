@@ -171,19 +171,19 @@ def preprocess_image_for_ocr_scale_aware(img: np.ndarray, scale_factor: float = 
     return denoised
 
 
-def preprocess_image_for_visual_search(img: np.ndarray, size: tuple = (400, 400)) -> Optional[np.ndarray]:
+def preprocess_image_for_visual_search(
+    img: np.ndarray,
+    target_size: int = 400
+) -> Optional[np.ndarray]:
     """
-    Preprocess image for visual search: convert to grayscale and resize.
-    
+    Minimal preprocessing for visual search:
+    1. Convert to grayscale
+    2. Resize to a fixed square (default 400x400)
     """
     if img is None:
         return None
     
-    # Convert to grayscale
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    
-    # Resize
-    resized = cv2.resize(gray, size)
-    
+    resized = cv2.resize(gray, (target_size, target_size))
     return resized
 
