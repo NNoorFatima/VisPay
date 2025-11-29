@@ -1,3 +1,6 @@
+import { NavLink } from "react-router-dom";
+import { Shield, Search } from "lucide-react";
+
 export default function Navigation() {
   return (
     <nav className="sticky top-0 z-50 bg-background border-b border-border">
@@ -8,7 +11,7 @@ export default function Navigation() {
             <div className="flex items-center space-x-2">
               <img
                 src="/icons/main.png"
-                alt="APITest Logo"
+                alt="VisPay Logo"
                 className="h-10 w-auto object-contain"
               />
             </div>
@@ -23,7 +26,35 @@ export default function Navigation() {
           </div>
         </div>
 
-        {/* Right Section - Status and User */}
+        {/* Navigation Links */}
+        <div className="flex items-center gap-2">
+          <NavLink
+            to="/payment"
+            className={({ isActive }) =>
+              `flex items-center gap-2 px-4 py-2 rounded-lg transition-all ${
+                isActive
+                  ? "bg-primary text-primary-foreground"
+                  : "text-foreground hover:bg-primary/10"
+              }`
+            }
+          >
+            <Shield className="w-4 h-4" />
+            <span className="font-medium">Payment Verification</span>
+          </NavLink>
+          <NavLink
+            to="/search"
+            className={({ isActive }) =>
+              `flex items-center gap-2 px-4 py-2 rounded-lg transition-all ${
+                isActive
+                  ? "bg-primary text-primary-foreground"
+                  : "text-foreground hover:bg-primary/10"
+              }`
+            }
+          >
+            <Search className="w-4 h-4" />
+            <span className="font-medium">Product Search</span>
+          </NavLink>
+        </div>
       </div>
     </nav>
   );

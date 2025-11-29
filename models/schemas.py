@@ -38,10 +38,11 @@ class ProductMatch(BaseModel):
     """Model for a product match result."""
     product_image: str = Field(..., description="Filename of matched product image")
     product_image_url: Optional[str] = Field(None, description="URL for matched inventory image")
-    feature_method: Optional[str] = Field(None, description="Feature extractor used (SIFT/ORB)")
-    similarity_score: int = Field(..., description="Number of feature matches")
+    feature_method: Optional[str] = Field(None, description="Feature extractor used (ResNet50/SIFT/ORB)")
+    similarity_score: float = Field(..., description="Combined similarity score (0-1)")
     match_confidence: int = Field(..., description="Confidence percentage (0-100)")
     color_similarity: Optional[float] = Field(None, description="Color similarity percentage (0-100)")
+    semantic_similarity: Optional[float] = Field(None, description="Semantic similarity score (0-1)")
 
 
 class ProductSearchResponse(BaseModel):

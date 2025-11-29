@@ -24,6 +24,7 @@ uploads/
 processed/
 static/product_images
 archive/
+data/
 
 # OS files
 .DS_Store

@@ -33,7 +33,9 @@ class Settings(BaseSettings):
     LOG_OCR_EXTRACTION: bool = True  
     
     # Visual Search Settings
-    INVENTORY_DIR: str = "static/product_images"  
+    INVENTORY_DIR: str = "static/product_images"
+    VISUAL_SEARCH_INDEX_PATH: Optional[str] = None  # Path to save/load feature index (e.g., "data/visual_search_index.pkl")
+    VISUAL_SEARCH_COLOR_WEIGHT: float = 0.3  # Weight for color similarity (0-1)  
     
     # File Upload Settings
     UPLOAD_DIR: str = "uploads"
