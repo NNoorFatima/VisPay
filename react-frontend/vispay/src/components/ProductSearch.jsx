@@ -171,7 +171,7 @@ export default function ProductSearch({ onResultChange, onProcessingChange }) {
                 className="w-full"
               />
             </div>
-            <div>
+            {/* <div>
               <label className="block text-sm font-semibold text-foreground mb-2">
                 Color Weight: {(colorWeight * 100).toFixed(0)}%
               </label>
@@ -194,7 +194,7 @@ export default function ProductSearch({ onResultChange, onProcessingChange }) {
                 Lower values prioritize semantic features, higher values
                 prioritize color matching
               </p>
-            </div>
+            </div> */}
           </div>
         )}
 
