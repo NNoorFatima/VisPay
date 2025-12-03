@@ -718,38 +718,54 @@ def check_image_authenticity(
     Returns:
         Dictionary with authenticity scores and overall recommendation
     """
-    logger.info("[AUTHENTICITY] Starting comprehensive authenticity check...")
-    
+    perspective_score = 0.5
+    try:
+        perspective_score = check_perspective_integrity(img)
+    except Exception as e:
+        logger.warning(f"[AUTHENTICITY] Initial perspective check failed: {e}")
+
+# *** NEW HEURISTIC: Check if image is likely a digital screenshot/export ***
+# If the perspective score is very low (too many perfect angles), treat it as digital source.
+    IS_LIKELY_DIGITAL_EXPORT = perspective_score < 0.45
+    if IS_LIKELY_DIGITAL_EXPORT:
+        logger.warning("[AUTHENTICITY] Detected likely digital export (perfect angles). Adjusting heuristics.")
     indicators = []
     
-    # 1. Metadata Analysis
+    # 1. Metadata Analysis(10)
     if image_path:
         try:
             metadata_score = check_metadata_integrity(image_path)
             indicators.append({
                 "check": "metadata_integrity",
                 "score": metadata_score,
-                "weight": 0.15,
+                "weight": 0.10,
                 "description": "EXIF metadata analysis"
             })
             logger.debug(f"[AUTHENTICITY] Metadata score: {metadata_score:.2f}")
         except Exception as e:
             logger.warning(f"[AUTHENTICITY] Metadata check failed: {e}")
     
-    # 2. Copy-Move Detection
+    # 2. Copy-Move Detection (35)
     try:
-        copy_move_score = detect_copy_move_forgery(img)
+        raw_copy_move_score = detect_copy_move_forgery(img)
+        copy_move_score = raw_copy_move_score
+        if IS_LIKELY_DIGITAL_EXPORT:
+        # Neutralize Copy-Move for digital exports (UI repetition causes high false positive rate)
+            copy_move_score = 0.85 
+            logger.warning(f"[AUTHENTICITY] Copy-Move neutralized to {copy_move_score:.2f} due to digital export flag.")
+        # Copy_move_score = detect_copy_move_forgery(img)
         indicators.append({
             "check": "copy_move_detection",
             "score": copy_move_score,
-            "weight": 0.20,
-            "description": "Pixel-level copy-move forgery detection"
+            "weight": 0.35,
+            "description": "Pixel-level copy-move forgery detection",
+            "raw_score": raw_copy_move_score
         })
         logger.debug(f"[AUTHENTICITY] Copy-move score: {copy_move_score:.2f}")
     except Exception as e:
         logger.warning(f"[AUTHENTICITY] Copy-move detection failed: {e}")
     
-    # 3. Compression Artifacts
+    # 3. Compression Artifacts(10)
     if image_path:
         try:
             comp_analysis = analyze_compression_artifacts(image_path)
@@ -757,14 +773,14 @@ def check_image_authenticity(
             indicators.append({
                 "check": "compression_artifacts",
                 "score": comp_score,
-                "weight": 0.10,
+                "weight": 0.05,
                 "description": "JPEG re-compression artifact detection"
             })
             logger.debug(f"[AUTHENTICITY] Compression score: {comp_score:.2f}")
         except Exception as e:
             logger.warning(f"[AUTHENTICITY] Compression analysis failed: {e}")
     
-    # 4. Font Consistency
+    # 4. Font Consistency(15)
     try:
         font_analysis = analyze_font_consistency(img, ocr_results)
         font_score = font_analysis.get("ocr_confidence_consistency", 0.7)
@@ -778,7 +794,7 @@ def check_image_authenticity(
     except Exception as e:
         logger.warning(f"[AUTHENTICITY] Font consistency check failed: {e}")
     
-    # 5. Semantic Consistency (LLM)
+    # 5. Semantic Consistency (LLM)(15)
     if raw_ocr_text:
         try:
             semantic_result = check_semantic_consistency_with_llm(raw_ocr_text)
@@ -786,14 +802,14 @@ def check_image_authenticity(
             indicators.append({
                 "check": "semantic_consistency",
                 "score": semantic_score,
-                "weight": 0.20,
+                "weight": 0.15,
                 "description": "LLM-based logical consistency check"
             })
             logger.debug(f"[AUTHENTICITY] Semantic score: {semantic_score:.2f}")
         except Exception as e:
             logger.warning(f"[AUTHENTICITY] Semantic check failed: {e}")
     
-    # 6. Noise Distribution
+    # 6. Noise Distribution(5)
     try:
         if len(img.shape) == 3:
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -805,20 +821,26 @@ def check_image_authenticity(
         indicators.append({
             "check": "noise_distribution",
             "score": noise_score,
-            "weight": 0.10,
+            "weight": 0.05,
             "description": "Regional noise pattern analysis"
         })
         logger.debug(f"[AUTHENTICITY] Noise score: {noise_score:.2f}")
     except Exception as e:
         logger.warning(f"[AUTHENTICITY] Noise analysis failed: {e}")
     
-    # 7. Perspective Distortion
+    # 7. Perspective Distortion(20)
     try:
-        perspective_score = check_perspective_integrity(img)
+        # Use the score calculated earlier
+        final_perspective_score = perspective_score
+        if IS_LIKELY_DIGITAL_EXPORT:
+        # Neutralize score to authentic/high because perfect angles are normal for digital exports
+            final_perspective_score = 0.90 
+            logger.warning(f"[AUTHENTICITY] Perspective neutralized to {final_perspective_score:.2f} due to digital export flag.")
+        #perspective_score = check_perspective_integrity(img)
         indicators.append({
             "check": "perspective_distortion",
             "score": perspective_score,
-            "weight": 0.10,
+            "weight": 0.15,
             "description": "Optical perspective and edge integrity"
         })
         logger.debug(f"[AUTHENTICITY] Perspective score: {perspective_score:.2f}")
@@ -833,14 +855,26 @@ def check_image_authenticity(
     else:
         overall_authenticity = 0.5
     
-    # Determine recommendation (use slightly stricter thresholds)
-    if overall_authenticity > 0.80:
+    # *** NEW LOGIC: HARD FAIL OVERRIDE ***
+    raw_cm_score = next((ind["raw_score"] for ind in indicators if ind["check"] == "copy_move_detection"), 1.0)
+    if not IS_LIKELY_DIGITAL_EXPORT and raw_cm_score < 0.20:
+    # Only apply hard fail if it's a photo/scan AND the raw copy-move score is critically low
+        logger.warning(f"[AUTHENTICITY] CRITICAL FAIL OVERRIDE: Raw Copy-Move score is extremely low ({raw_cm_score:.2f}). Forcing low score.")
+        # Force the score down so it lands in the LIKELY_FORGED bucket
+        overall_authenticity = min(overall_authenticity, 0.40)
+    # === HARD FAIL OVERRIDE LOGIC ===
+            
+    if overall_authenticity > 0.85:
         recommendation = "AUTHENTIC"
         confidence_level = "HIGH"
-    elif overall_authenticity > 0.65:
+    # Determine recommendation (use slightly stricter thresholds)
+    # if overall_authenticity > 0.70:
+    #     recommendation = "AUTHENTIC"
+    #     confidence_level = "HIGH"
+    elif overall_authenticity > 0.70:
         recommendation = "LIKELY_AUTHENTIC"
         confidence_level = "MEDIUM"
-    elif overall_authenticity > 0.45:
+    elif overall_authenticity > 0.40:
         recommendation = "SUSPICIOUS"
         confidence_level = "MEDIUM"
     else:
@@ -852,11 +886,12 @@ def check_image_authenticity(
         "recommendation": recommendation,
         "confidence_level": confidence_level,
         "indicators": indicators,
-        "is_suspicious": overall_authenticity < 0.6,
+        "is_suspicious": overall_authenticity < 0.70,
         "details": {
             "total_checks_performed": len(indicators),
             "checks_passed": sum(1 for ind in indicators if ind["score"] > 0.7),
-            "checks_failed": sum(1 for ind in indicators if ind["score"] < 0.4)
+            "checks_failed": sum(1 for ind in indicators if ind["score"] < 0.4),
+            "is_digital_source": IS_LIKELY_DIGITAL_EXPORT
         }
     }
     
