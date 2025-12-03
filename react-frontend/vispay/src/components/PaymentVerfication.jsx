@@ -92,6 +92,11 @@ export default function PaymentVerification({ onResultChange, onProcessingChange
         verificationResult.imageQuality = apiResult.image_quality;
       }
 
+      if (apiResult.authenticity) {
+        verificationResult.data["Authenticity Status"] = apiResult.authenticity.recommendation.replace(/_/g, ' ');
+        verificationResult.data["Authenticity Score"] = `${(apiResult.authenticity.authenticity_score * 100).toFixed(1)}%`;
+      }
+
       setResult(verificationResult);
       onResultChange?.(verificationResult);
     } catch (err) {

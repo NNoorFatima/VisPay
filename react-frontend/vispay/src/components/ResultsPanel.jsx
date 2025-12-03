@@ -223,7 +223,7 @@ export default function ResultsPanel({ result, isProcessing }) {
 
             {isPayment && result.apiResult.llm_explanations && (
               <div className="mt-3 pt-3 border-t border-border">
-                <p className="text-xs text-muted-foreground mb-2">LLM Explanations</p>
+                <p className="text-xs font-medium text-muted-foreground mb-2">LLM Explanations</p>
                 <div className="space-y-2 text-xs">
                   {Object.entries(result.apiResult.llm_explanations).map(([field, explanation]) => (
                     <div key={field}>
@@ -231,6 +231,76 @@ export default function ResultsPanel({ result, isProcessing }) {
                       <p className="text-muted-foreground">{explanation}</p>
                     </div>
                   ))}
+                </div>
+              </div>
+            )}
+
+            {isPayment && result.apiResult.authenticity && (
+              <div className="mt-3 pt-3 border-t border-border">
+                <p className="text-xs font-medium text-muted-foreground mb-3">Image Authenticity Analysis</p>
+                <div className="space-y-3">
+                  <div>
+                    <div className="flex justify-between items-center mb-1">
+                      <span className="text-xs text-muted-foreground">Authenticity Score</span>
+                      <span className={`text-sm font-bold ${
+                        result.apiResult.authenticity.authenticity_score > 0.8 ? 'text-green-600' :
+                        result.apiResult.authenticity.authenticity_score > 0.65 ? 'text-blue-600' :
+                        result.apiResult.authenticity.authenticity_score > 0.45 ? 'text-yellow-600' :
+                        'text-red-600'
+                      }`}>
+                        {(result.apiResult.authenticity.authenticity_score * 100).toFixed(1)}%
+                      </span>
+                    </div>
+                    <div className="w-full bg-muted rounded-full h-2">
+                      <div
+                        className={`h-2 rounded-full transition-all ${
+                          result.apiResult.authenticity.authenticity_score > 0.8 ? 'bg-green-600' :
+                          result.apiResult.authenticity.authenticity_score > 0.65 ? 'bg-blue-600' :
+                          result.apiResult.authenticity.authenticity_score > 0.45 ? 'bg-yellow-600' :
+                          'bg-red-600'
+                        }`}
+                        style={{ width: `${result.apiResult.authenticity.authenticity_score * 100}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-xs text-muted-foreground mb-1">Recommendation</p>
+                    <p className={`text-sm font-semibold ${
+                      result.apiResult.authenticity.recommendation === 'AUTHENTIC' ? 'text-green-600' :
+                      result.apiResult.authenticity.recommendation === 'LIKELY_AUTHENTIC' ? 'text-blue-600' :
+                      result.apiResult.authenticity.recommendation === 'SUSPICIOUS' ? 'text-yellow-600' :
+                      'text-red-600'
+                    }`}>
+                      {result.apiResult.authenticity.recommendation.replace(/_/g, ' ')}
+                    </p>
+                  </div>
+
+                  {result.apiResult.authenticity.indicators && result.apiResult.authenticity.indicators.length > 0 && (
+                    <div>
+                      <p className="text-xs text-muted-foreground mb-2">Forensic Checks</p>
+                      <div className="space-y-2">
+                        {result.apiResult.authenticity.indicators.map((indicator) => (
+                          <div key={indicator.check} className="flex items-start gap-2 p-2 bg-muted/20 rounded text-xs">
+                            <div className={`w-2 h-2 rounded-full mt-1 flex-shrink-0 ${
+                              indicator.score > 0.7 ? 'bg-green-600' :
+                              indicator.score > 0.5 ? 'bg-yellow-600' :
+                              'bg-red-600'
+                            }`} />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-foreground font-medium capitalize">
+                                {indicator.check.replace(/_/g, ' ')}
+                              </p>
+                              <p className="text-muted-foreground text-xs">{indicator.description}</p>
+                              <p className="text-foreground font-semibold text-xs mt-1">
+                                Score: {(indicator.score * 100).toFixed(1)}% (Weight: {(indicator.weight * 100).toFixed(0)}%)
+                              </p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
