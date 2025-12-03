@@ -119,7 +119,16 @@ def analyze_image_quality(img: np.ndarray) -> Dict[str, float]:
         text_density * 0.10 +
         (100 - abs(brightness - 50)) * 0.10  # Prefer medium brightness
     )
-    
+    print(
+        f"Image Quality Analysis:\n"
+        f"noise_level: {noise_level}\n"
+        f"contrast: {contrast}\n"
+        f"brightness: {brightness}\n"
+        f"blur_level: {blur_level}\n"
+        f"resolution_score: {resolution_score}\n"
+        f"text_density: {text_density}\n"
+        f"overall_quality: {overall_quality}"
+    )
     return {
         "noise_level": noise_level,
         "contrast": contrast,
@@ -212,7 +221,10 @@ def auto_select_preprocessing(img: np.ndarray) -> Tuple[str, Dict[str, float]]:
     """
     try:
         quality_metrics = analyze_image_quality(img)
-        
+        #for digital images
+        # inside auto_select_preprocessing after computing quality_metrics:
+        if is_digital_image(quality_metrics):
+            return "digital", quality_metrics
         method = select_preprocessing_method(quality_metrics)
         
         logger.debug(f"Auto-selected preprocessing: {method} (quality: {quality_metrics['overall_quality']:.1f})")
@@ -223,3 +235,14 @@ def auto_select_preprocessing(img: np.ndarray) -> Tuple[str, Dict[str, float]]:
         logger.warning(f"Error in auto preprocessing selection: {e}, defaulting to 'minimal'")
         return "minimal", {}
 
+#added for digital images 
+def is_digital_image(metrics: Dict[str, float]) -> bool:
+    """
+    Heuristic to detect digital/screenshot images based on computed metrics.
+    """
+    print("Checking for digital image based on quality metrics...", metrics, '\n')
+    return (
+        metrics.get("noise_level", 100) < 20 and
+        metrics.get("contrast", 0) > 50 and
+        metrics.get("blur_level", 0) > 40
+    )

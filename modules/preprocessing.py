@@ -187,3 +187,37 @@ def preprocess_image_for_visual_search(
     resized = cv2.resize(gray, (target_size, target_size))
     return resized
 
+#adding function for digital images 
+# put in modules/preprocessing.py (or keep beside existing functions)
+def preprocess_image_for_digital(img: np.ndarray) -> np.ndarray:
+    """
+    Preprocessing tuned for digital screenshots / exported PDFs:
+    - Keep text crisp, mild sharpening and slight contrast boost.
+    - Avoid heavy denoising or adaptive thresholding that can break crisp text.
+    """
+    if img is None:
+        raise ValueError("Input image is None")
+
+    # Convert to grayscale
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # Mild sharpening
+    kernel = np.array([[0, -1, 0],
+                       [-1, 5, -1],
+                       [0, -1, 0]])
+    sharpened = cv2.filter2D(gray, -1, kernel)
+
+    # Small CLAHE to boost contrast slightly but conservatively
+    clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
+    enhanced = clahe.apply(sharpened)
+
+    # Use OTSU threshold only if the image is very flat (mono-color background)
+    # Otherwise return enhanced (OCR engines often prefer grayscale)
+    # Heuristic: compute simple bimodality via histogram
+    hist = cv2.calcHist([enhanced], [0], None, [256], [0,256])
+    peaks = (hist > (0.05 * enhanced.size)).sum()
+    if peaks < 30:  # relatively few peaks => likely clean two-tone
+        _, thresh = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        return thresh
+
+    return enhanced
