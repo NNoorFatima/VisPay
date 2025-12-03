@@ -21,26 +21,52 @@ from modules.preprocessing import (
     preprocess_image_for_ocr_medium,
     preprocess_image_for_ocr_advanced,
     preprocess_image_for_ocr_morphology,
-    preprocess_image_for_ocr_scale_aware
+    preprocess_image_for_ocr_scale_aware,
+    preprocess_image_for_digital
 )
 from modules.image_analysis import auto_select_preprocessing
 from config import settings
 
+try:
+    if settings.TESSERACT_CMD:
+        pytesseract.pytesseract.tesseract_cmd = settings.TESSERACT_CMD
+except Exception:
+    pass
+# def extract_text_pytesseract(img: np.ndarray) -> str:
+#     """
+#     Extract text from image using pytesseract.
+#     """
+#     return pytesseract.image_to_string(img)
 
-def extract_text_pytesseract(img: np.ndarray) -> str:
+#receive text from config file 
+# Replace or overload the existing helper
+def extract_text_pytesseract(img: np.ndarray, config: str = "--oem 1 --psm 6") -> str:
     """
-    Extract text from image using pytesseract.
+    Extract text from image using pytesseract with configurable options.
+    Default: LSTM engine, assume a block of text.
     """
-    return pytesseract.image_to_string(img)
+    # Ensure tesseract executable path is set (config.py should provide it)
+    try:
+        if settings.TESSERACT_CMD:
+            pytesseract.pytesseract.tesseract_cmd = settings.TESSERACT_CMD
+    except Exception:
+        pass
 
+    return pytesseract.image_to_string(img, config=config)
 
-def extract_text_easyocr(img: np.ndarray, reader) -> list:
+# def extract_text_easyocr(img: np.ndarray, reader) -> list:
+#     """
+#     Extract text from image using EasyOCR.
+#     """
+#     results = reader.readtext(img)
+#     return results
+#updated function 
+def extract_text_easyocr(img: np.ndarray, reader, paragraph: bool = True, contrast_ths: float = 0.05, detail: int = 1) -> list:
     """
-    Extract text from image using EasyOCR.
+    Extract text from image using EasyOCR with configurable parameters.
     """
-    results = reader.readtext(img)
+    results = reader.readtext(img, detail=detail, paragraph=paragraph, contrast_ths=contrast_ths)
     return results
-
 
 def is_date_pattern(candidate: str) -> bool:
     """
@@ -585,6 +611,7 @@ def get_preprocessing_function(method: str):
         "medium": preprocess_image_for_ocr_medium,
         "advanced": preprocess_image_for_ocr_advanced,
         "morphology": preprocess_image_for_ocr_morphology,
+        "digital": preprocess_image_for_digital,
         "scale_aware": preprocess_image_for_ocr_scale_aware,
         "auto": None,  
         "default": preprocess_image_for_ocr,
@@ -622,6 +649,7 @@ def verify_payment_receipt(
         elif preprocessing_method is None:
             # Use configured method
             method = settings.OCR_PREPROCESSING_METHOD
+            print(method,"method used from settings\n")
         else:
             # Use explicitly provided method
             method = preprocessing_method
@@ -644,11 +672,14 @@ def verify_payment_receipt(
         ocr_results = None
         
         if use_easyocr and easyocr_reader:
-            ocr_results = extract_text_easyocr(processed_img, easyocr_reader)
+            # ocr_results = extract_text_easyocr(processed_img, easyocr_reader)
+            ocr_results = extract_text_easyocr(processed_img, easyocr_reader, paragraph=True, contrast_ths=0.05)
             # Combine all text
             raw_text = '\n'.join([res[1] for res in ocr_results if res[1].strip()])
         else:
-            raw_text = extract_text_pytesseract(processed_img)
+            # raw_text = extract_text_pytesseract(processed_img)
+            tess_config = "--oem 1 --psm 6"
+            raw_text = extract_text_pytesseract(processed_img, config=tess_config)
         
         logger.info(f"[OCR] Extracted {len(raw_text)} characters of text")
         logger.debug(f"[OCR] Full OCR text:\n{raw_text}\n{'='*60}")

@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     # OCR Settings
     TESSERACT_CMD: Optional[str] = None  
     USE_EASYOCR: bool = False  # Set to True to use EasyOCR instead of pytesseract
-    OCR_PREPROCESSING_METHOD: str = "minimal"  # Options: minimal, light, medium, advanced, morphology, scale_aware, auto (used if auto is disabled)
+    OCR_PREPROCESSING_METHOD: str = "light"  # Options: minimal, light, medium, advanced, morphology, scale_aware, auto (used if auto is disabled)
     OCR_AUTO_PREPROCESSING: bool = True  
     
     # LLM Extraction Settings 
