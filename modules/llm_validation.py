@@ -5,9 +5,10 @@ Uses Google Gemini API (free tier).
 """
 import json
 import re
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, List
 import logging
 from config import settings
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +18,58 @@ try:
 except ImportError:
     GEMINI_AVAILABLE = False
     logger.warning("Google Generative AI (Gemini) not available. Install with: pip install google-generativeai")
+
+
+def extract_with_llm_and_authenticity_check(
+    raw_text: str,
+    img: Optional[np.ndarray] = None,
+    image_path: Optional[str] = None,
+    ocr_results: Optional[List[Any]] = None
+) -> Dict[str, Any]:
+    """
+    Extract receipt fields AND check for image manipulation/authenticity.
+    
+    Integrates with receipt_authenticity module for comprehensive fraud detection.
+    
+    Args:
+        raw_text: OCR text extracted from image
+        img: Image as numpy array (for pixel-level forensics)
+        image_path: Path to image file (for EXIF analysis)
+        ocr_results: OCR results with confidence scores (for font consistency)
+    
+    Returns:
+        Dictionary with extraction results + authenticity indicators
+    """
+    # First, extract fields using LLM
+    extraction_result = extract_with_llm(raw_text)
+    
+    # Then, check authenticity
+    if img is not None:
+        try:
+            from modules.receipt_authenticity import check_image_authenticity
+            
+            authenticity_result = check_image_authenticity(
+                img=img,
+                image_path=image_path,
+                ocr_results=ocr_results,
+                raw_ocr_text=raw_text
+            )
+            
+            # Add authenticity data to extraction result
+            extraction_result["authenticity_check"] = authenticity_result
+            extraction_result["is_suspicious"] = authenticity_result.get("is_suspicious", False)
+            extraction_result["authenticity_score"] = authenticity_result.get("authenticity_score", 0.5)
+            extraction_result["authenticity_recommendation"] = authenticity_result.get("recommendation", "UNKNOWN")
+            
+            logger.info(f"[LLM+AUTH] Extraction + Authenticity check complete. Auth score: {authenticity_result.get('authenticity_score')}")
+            
+            return extraction_result
+        
+        except Exception as e:
+            logger.warning(f"[LLM+AUTH] Authenticity check failed, returning extraction only: {e}")
+            return extraction_result
+    
+    return extraction_result
 
 
 def extract_with_llm(raw_text: str) -> Dict[str, Any]:
@@ -61,8 +114,14 @@ Extract these 3 fields:
 2. amount: Total amount paid (largest monetary value)
 3. date: Transaction date (DD/MM/YYYY format)
 
+ALSO CHECK FOR AUTHENTICITY INDICATORS:
+- Do line items, subtotal, tax, and total add up mathematically?
+- Are all date formats consistent?
+- Are currency symbols used correctly throughout?
+- Is there any suspicious formatting or inconsistency?
+
 Respond with ONLY this JSON (no markdown, no explanation):
-{{"transaction_id":"value_or_null","amount":"value_or_null","date":"value_or_null","confidence":{{"transaction_id":0.0,"amount":0.0,"date":0.0}}}}"""
+{{"transaction_id":"value_or_null","amount":"value_or_null","date":"value_or_null","confidence":{{"transaction_id":0.0,"amount":0.0,"date":0.0}},"authenticity_check":{{"amounts_consistent":true/false,"date_format_consistent":true/false,"formatting_typical":true/false}}}}"""
 
         logger.debug("[LLM] Calling Gemini API...")
         

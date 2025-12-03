@@ -11,7 +11,8 @@ import uuid
 from pathlib import Path
 from datetime import datetime
 import logging
-
+from modules.llm_validation import extract_with_llm_and_authenticity_check
+from modules.image_analysis import check_image_authenticity_basic
 logger = logging.getLogger(__name__)
 
 from modules.preprocessing import (
@@ -626,7 +627,8 @@ def verify_payment_receipt(
     use_easyocr: bool = False,
     easyocr_reader=None,
     save_processed: bool = True,
-    preprocessing_method: Optional[str] = None
+    preprocessing_method: Optional[str] = None,
+    original_image_path: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Main function to verify payment receipt from image.
@@ -666,57 +668,89 @@ def verify_payment_receipt(
             except Exception as save_error:
                 # Log but don't fail the entire process if saving fails
                 print(f"Warning: Failed to save processed image: {save_error}")
-        
-        # Extract all OCR text
+       
+        # 2. Quick authenticity check (optional fast pre-filter)
+        logger.info("[AUTHENTICITY] Running quick authenticity pre-check...")
+        quick_auth = check_image_authenticity_basic(img)
+        logger.debug(f"[AUTHENTICITY] Quick check result: {quick_auth}")
+        if quick_auth.get("is_suspicious"):
+            logger.warning("[AUTHENTICITY] Image failed quick authenticity check - flagged as suspicious")
+       
+        # 3. Extract all OCR text
         raw_text = None
         ocr_results = None
         
         if use_easyocr and easyocr_reader:
-            # ocr_results = extract_text_easyocr(processed_img, easyocr_reader)
+            logger.info("[OCR] Using EasyOCR for text extraction")
             ocr_results = extract_text_easyocr(processed_img, easyocr_reader, paragraph=True, contrast_ths=0.05)
             # Combine all text
             raw_text = '\n'.join([res[1] for res in ocr_results if res[1].strip()])
         else:
-            # raw_text = extract_text_pytesseract(processed_img)
+            logger.info("[OCR] Using Pytesseract for text extraction")
             tess_config = "--oem 1 --psm 6"
             raw_text = extract_text_pytesseract(processed_img, config=tess_config)
-        
+       
         logger.info(f"[OCR] Extracted {len(raw_text)} characters of text")
         logger.debug(f"[OCR] Full OCR text:\n{raw_text}\n{'='*60}")
         
-        # Use LLM for extraction (primary method)
+        # 4. Extract + Authenticity (NEW - integrated approach)
+        logger.info("[EXTRACTION+AUTH] Starting integrated extraction and authenticity check...")
+        
+        # Use LLM for extraction with authenticity check (primary method)
         llm_confidence = {}
         llm_explanations = {}
         parsed = {}
         result_fields = {}
+        authenticity_result = {}
         
         try:
-            from modules.llm_validation import extract_with_llm
-            parsed = extract_with_llm(raw_text)
+            # Call integrated function that does both extraction and authenticity check
+            # Prefer the original uploaded file path for file-based checks (EXIF, JPEG artifacts)
+            preferred_image_path = original_image_path if original_image_path else processed_image_path
+
+            parsed = extract_with_llm_and_authenticity_check(
+                raw_text=raw_text,
+                img=img,  # Pass original image for pixel-level forensics
+                image_path=preferred_image_path,  # For EXIF extraction (if available)
+                ocr_results=ocr_results if use_easyocr else None  # For font consistency check
+            )
+            
+            logger.info(f"[EXTRACTION+AUTH] Integrated check completed")
             
             # Check if LLM extraction succeeded
-            if parsed.get("error"):
-                logger.warning(f"[LLM] Extraction error: {parsed.get('error')}, falling back to regex...")
+            if parsed.get("error") and "Gemini" in parsed.get("error", ""):
+                logger.warning(f"[EXTRACTION+AUTH] LLM extraction error: {parsed.get('error')}, falling back to regex...")
                 # Fallback to regex extraction
                 if use_easyocr and easyocr_reader and ocr_results:
                     parsed = parse_receipt_easyocr(ocr_results)
                 else:
                     parsed = parse_receipt_pytesseract(raw_text)
                 result_fields = parsed
+                authenticity_result = {}
             else:
-                # LLM extraction succeeded
+                # Extract fields
                 result_fields = {
                     "transaction_id": parsed.get("transaction_id"),
                     "amount": parsed.get("amount"),
                     "date": parsed.get("date")
                 }
+                
                 # Store LLM metadata
                 llm_confidence = parsed.get("confidence", {})
                 llm_explanations = parsed.get("explanations", {})
                 
+                # Extract authenticity data
+                authenticity_result = parsed.get("authenticity_check", {})
+                is_suspicious = parsed.get("is_suspicious", False)
+                authenticity_score = parsed.get("authenticity_score", 0.5)
+                authenticity_recommendation = parsed.get("authenticity_recommendation", "UNKNOWN")
+                
+                logger.info(f"[EXTRACTION+AUTH] Authenticity Score: {authenticity_score:.3f} | "
+                           f"Recommendation: {authenticity_recommendation} | Suspicious: {is_suspicious}")
+                
         except Exception as e:
-            logger.error(f"[LLM] Failed to extract with LLM: {e}")
-            # Fallback to basic extraction if LLM fails
+            logger.error(f"[EXTRACTION+AUTH] Integrated extraction failed: {e}")
+            # Fallback to basic extraction if integration fails
             import traceback
             logger.error(traceback.format_exc())
             if use_easyocr and easyocr_reader and ocr_results:
@@ -724,8 +758,10 @@ def verify_payment_receipt(
             else:
                 parsed = parse_receipt_pytesseract(raw_text)
             result_fields = parsed
+            authenticity_result = {}
         
-        # Determine verification status
+        # 5. Determine verification status
+        logger.info("[VERIFICATION] Determining verification status...")
         verification_status = "verified" if all([
             result_fields.get("transaction_id"),
             result_fields.get("amount"),
@@ -736,6 +772,18 @@ def verify_payment_receipt(
             result_fields.get("date")
         ]) else "failed"
         
+        # Check authenticity for final decision
+        is_authentic = authenticity_result.get("recommendation") in ["AUTHENTIC", "LIKELY_AUTHENTIC"]
+        authenticity_score = authenticity_result.get("authenticity_score", 0.5)
+        
+        # Adjust verification status based on authenticity
+        if authenticity_score < 0.35:
+            logger.warning(f"[VERIFICATION] Image authenticity very low ({authenticity_score:.3f}) - marking as suspicious")
+            verification_status = "suspicious_forgery"
+        elif authenticity_score < 0.6 and verification_status == "verified":
+            logger.warning(f"[VERIFICATION] Image authenticity low ({authenticity_score:.3f}) - marking as needs_review")
+            verification_status = "needs_review"
+        
         result = {
             **result_fields,
             "verification_status": verification_status,
@@ -744,7 +792,11 @@ def verify_payment_receipt(
             "preprocessing_method": method,
             "auto_selected": auto_selected_flag,
             "llm_confidence": llm_confidence,
-            "llm_explanations": llm_explanations
+            "llm_explanations": llm_explanations,
+            # Add authenticity data (use the full authenticity_result produced by
+            # the forensic module so keys match the Pydantic response model)
+            "authenticity": authenticity_result if isinstance(authenticity_result, dict) else {},
+            "verified": verification_status == "verified" and is_authentic
         }
         
         # Include quality metrics if auto-selected
@@ -762,6 +814,9 @@ def verify_payment_receipt(
         if processed_image_path:
             result["processed_image_path"] = processed_image_path
             result["processed_image_url"] = f"/processed/{Path(processed_image_path).name}"
+        
+        logger.info(f"[VERIFICATION] Final result: status={verification_status}, "
+                   f"verified={result.get('verified')}, authenticity_score={authenticity_score:.3f}")
         
         return result
     

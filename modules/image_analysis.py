@@ -3,7 +3,7 @@ Image quality analysis for automatic preprocessing method selection.
 """
 import cv2
 import numpy as np
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Any
 import logging
 
 logger = logging.getLogger(__name__)
@@ -138,6 +138,43 @@ def analyze_image_quality(img: np.ndarray) -> Dict[str, float]:
         "text_density": text_density,
         "overall_quality": overall_quality
     }
+
+
+def check_image_authenticity_basic(img: np.ndarray) -> Dict[str, Any]:
+    """
+    Quick image authenticity pre-check using quality metrics.
+    
+    Returns basic forensic indicators before heavy processing.
+    Used as a fast first-pass filter.
+    """
+    try:
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
+        
+        # Quick noise check
+        noise = calculate_noise_level(gray)
+        
+        # Quick compression check (histogram analysis)
+        hist = cv2.calcHist([gray], [0], None, [256], [0, 256])
+        hist_peaks = np.sum(hist > np.mean(hist) * 2)
+        compression_ratio = hist_peaks / 256
+        
+        # Check for unnatural uniformity (sign of digital creation)
+        uniformity = np.std(gray.flatten())
+        
+        indicators = {
+            "noise_level": noise,
+            "compression_ratio": float(compression_ratio),
+            "uniformity_std": float(uniformity),
+            "is_suspicious": noise > 60 or compression_ratio > 0.3 or uniformity < 15
+        }
+        
+        logger.debug(f"[AUTH_QUICK] Noise: {noise:.1f}, Compression: {compression_ratio:.2%}, Uniformity: {uniformity:.1f}")
+        
+        return indicators
+    
+    except Exception as e:
+        logger.warning(f"[AUTH_QUICK] Error in quick authenticity check: {e}")
+        return {"error": str(e)}
 
 
 def select_preprocessing_method(quality_metrics: Dict[str, float]) -> str:
