@@ -1,7 +1,6 @@
-
 """
-Receipt Image Authenticity and Manipulation Detection Module - UPDATED.
-Implements 9 forensic techniques including deep learning models.
+Receipt Image Authenticity and Manipulation Detection Module.
+Implements 7 forensic techniques to detect if a receipt has been digitally altered.
 
 Approaches:
 1. Metadata Analysis (EXIF/IPTC)
@@ -11,8 +10,6 @@ Approaches:
 5. Semantic Consistency Check (LLM-based)
 6. Noise Pattern Analysis
 7. Optical/Perspective Distortion Check
-8. TruFor Deep Learning Detection (NEW)
-9. ManTraNet Deep Learning Detection (NEW)
 """
 
 import cv2
@@ -40,29 +37,19 @@ except ImportError:
     PIEXIF_AVAILABLE = False
     logger.warning("piexif not available. EXIF parsing will be limited.")
 
-# Import deep learning forgery detection
-try:
-    from modules.forgery_models import check_deep_forgery
-    DEEP_LEARNING_AVAILABLE = True
-    logger.info("[AUTHENTICITY] Deep learning forgery detection available (TruFor + ManTraNet)")
-except ImportError:
-    DEEP_LEARNING_AVAILABLE = False
-    logger.warning("[AUTHENTICITY] Deep learning models not available. Install deep_forgery_detection module.")
-
 
 # ============================================================================
-# [Previous functions remain the same: extract_exif_metadata, 
-# check_metadata_integrity, compute_block_hash, detect_copy_move_forgery,
-# analyze_jpeg_artifacts, analyze_compression_artifacts,
-# check_ocr_confidence_consistency, analyze_font_consistency,
-# check_semantic_consistency_with_llm, analyze_noise_distribution,
-# check_perspective_integrity]
+# 1. METADATA ANALYSIS (EXIF/IPTC)
 # ============================================================================
-
-# ... [Include all previous functions here - they remain unchanged] ...
 
 def extract_exif_metadata(image_path: str) -> Dict[str, Any]:
-    """Extract EXIF metadata from image."""
+    """
+    Extract EXIF metadata from image to detect editing software and timestamps.
+    
+    Returns:
+        Dictionary with EXIF data including creation date, modification date,
+        camera info, and editing software markers.
+    """
     if not PIL_AVAILABLE:
         logger.warning("[AUTHENTICITY] PIL not available for EXIF extraction")
         return {"error": "PIL not available"}
@@ -78,7 +65,7 @@ def extract_exif_metadata(image_path: str) -> Dict[str, Any]:
         exif_dict = {}
         for tag_id, value in exif_data.items():
             tag = TAGS.get(tag_id, tag_id)
-            exif_dict[tag] = str(value)[:100]
+            exif_dict[tag] = str(value)[:100]  # Truncate long values
         
         logger.debug(f"[AUTHENTICITY] Extracted EXIF: {list(exif_dict.keys())}")
         
@@ -96,10 +83,21 @@ def extract_exif_metadata(image_path: str) -> Dict[str, Any]:
 
 
 def check_metadata_integrity(image_path: str) -> float:
-    """Analyze metadata for signs of tampering."""
+    """
+    Analyze metadata for signs of tampering.
+    
+    Score interpretation:
+        1.0 = Metadata present and consistent (more authentic)
+        0.5 = No metadata (neutral - digital receipts often have no EXIF)
+        0.0 = Suspicious metadata patterns (potential forgery)
+    
+    Returns:
+        Float score 0.0-1.0
+    """
     metadata = extract_exif_metadata(image_path)
     
     if "error" in metadata or not metadata.get("exif_present"):
+        # Digital receipts (PDFs exported as PNG/JPG) often have no EXIF
         logger.debug("[AUTHENTICITY] No EXIF data - typical for digital receipts (neutral)")
         return 0.5
     
@@ -112,8 +110,9 @@ def check_metadata_integrity(image_path: str) -> float:
     for editor in suspicious_editors:
         if editor in software:
             logger.warning(f"[AUTHENTICITY] Suspicious editor detected: {editor}")
-            return 0.2
+            return 0.2  # Low score: image likely edited with graphics software
     
+    # Check for consistency between creation and modification times
     if "DateTime" in exif_dict and "DateTimeOriginal" in exif_dict:
         if exif_dict["DateTime"] != exif_dict["DateTimeOriginal"]:
             logger.debug("[AUTHENTICITY] Creation and modification dates differ (possible edit)")
@@ -123,17 +122,37 @@ def check_metadata_integrity(image_path: str) -> float:
     return 0.8
 
 
+# ============================================================================
+# 2. PIXEL-LEVEL FORENSICS (COPY-MOVE DETECTION)
+# ============================================================================
+
 def compute_block_hash(block: np.ndarray, hash_size: int = 8) -> str:
-    """Compute hash signature for image block using DCT."""
+    """
+    Compute a simple hash signature for an image block.
+    Uses DCT (Discrete Cosine Transform) coefficients.
+    
+    Args:
+        block: Image block (typically 16x16 or 32x32)
+        hash_size: Size of hash output (default 8x8 = 64 bits)
+    
+    Returns:
+        String representation of hash
+    """
     try:
+        # Resize block to hash_size for consistent hashing
         resized = cv2.resize(block, (hash_size, hash_size))
         
+        # Convert to grayscale if needed
         if len(resized.shape) == 3:
             resized = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
         
+        # Compute DCT
         dct = cv2.dct(np.float32(resized) / 255.0)
+        
+        # Use low-frequency coefficients for hash
         avg_val = np.mean(dct[:hash_size//2, :hash_size//2])
         
+        # Convert to binary hash
         hash_bits = ''.join(['1' if dct[i, j] > avg_val else '0' 
                             for i in range(hash_size) for j in range(hash_size)])
         return hash_bits
@@ -144,22 +163,43 @@ def compute_block_hash(block: np.ndarray, hash_size: int = 8) -> str:
 
 
 def detect_copy_move_forgery(img: np.ndarray, block_size: int = 32, threshold: float = 0.95) -> float:
-    """Detect copy-move forgery using block matching."""
+    """
+    Detect copy-move forgery using block matching.
+    
+    Divides image into blocks, computes hashes, and searches for duplicates.
+    High similarity between distant blocks indicates potential copy-paste.
+    
+    Args:
+        img: Image as numpy array
+        block_size: Size of blocks to analyze (default 32x32)
+        threshold: Similarity threshold for flagging (0.0-1.0)
+    
+    Returns:
+        Float score 0.0-1.0 where 0.0 = likely forged, 1.0 = authentic
+    """
     try:
         if img is None or img.size == 0:
             return 0.5
         
+        # Convert to grayscale
         if len(img.shape) == 3:
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         else:
             gray = img
         
         height, width = gray.shape
-        block_hashes = defaultdict(list)
+        
+        # Extract blocks and compute hashes
+        block_hashes = defaultdict(list)  # hash -> list of (x, y) coordinates
         blocks_processed = 0
-        VAR_THRESHOLD = 30.0
-        MAX_LOCS_PER_HASH = 50
 
+        # Heuristic: skip near-uniform/low-variance blocks because they produce
+        # identical hashes across the image (background, margins) and cause
+        # massive false-positive duplicate counts.
+        VAR_THRESHOLD = 30.0  # tuned; blocks with variance below this are ignored
+        MAX_LOCS_PER_HASH = 50  # if a hash appears in >50 blocks, treat as background
+
+        # iterate blocks across full image; include last partial blocks
         for y in range(0, height, block_size):
             for x in range(0, width, block_size):
                 y_end = min(y + block_size, height)
@@ -168,8 +208,11 @@ def detect_copy_move_forgery(img: np.ndarray, block_size: int = 32, threshold: f
                 if block.size == 0:
                     continue
 
+                # compute variance and skip very-uniform blocks
                 block_var = float(np.var(block))
                 if block_var < VAR_THRESHOLD:
+                    # skip background/margin blocks
+                    logger.debug(f"[AUTHENTICITY] Skipping low-variance block at ({x},{y}) var={block_var:.2f}")
                     continue
 
                 blocks_processed += 1
@@ -177,45 +220,61 @@ def detect_copy_move_forgery(img: np.ndarray, block_size: int = 32, threshold: f
 
                 if not block_hash:
                     continue
+                # store coordinates and small diagnostic (we don't need variance later)
                 block_hashes[block_hash].append((x, y))
 
+        # Count suspicious duplicates (same hash at different, non-adjacent locations)
         duplicate_pairs = 0
+        # minimum distance (pixels) between blocks to consider them non-local duplicates
         min_distance = max(block_size * 2, 100)
 
         for hash_val, locations in block_hashes.items():
             loc_count = len(locations)
+            # If a hash occurs excessively across the image it's likely a background
+            # pattern (e.g., large white margins) despite our variance check; skip it.
             if loc_count <= 1 or loc_count > MAX_LOCS_PER_HASH:
+                if loc_count > MAX_LOCS_PER_HASH:
+                    logger.debug(f"[AUTHENTICITY] Ignoring hash {hash_val} with {loc_count} locations (likely background)")
                 continue
 
+            # compute number of distant pairs for this hash
             locs = locations
             pair_count = 0
             for i in range(len(locs)):
                 x1, y1 = locs[i]
                 for j in range(i + 1, len(locs)):
                     x2, y2 = locs[j]
-                    dist = ((x1 - x2) ** 2 + (y1 - y2) ** 2) ** 0.5
+                    dx = x1 - x2
+                    dy = y1 - y2
+                    dist = (dx * dx + dy * dy) ** 0.5
                     if dist >= min_distance:
                         pair_count += 1
 
             if pair_count > 0:
+                # cap pair_count to avoid single-hash quadratic blowups
                 capped_pairs = min(pair_count, loc_count * 5)
                 duplicate_pairs += capped_pairs
+                logger.debug(f"[AUTHENTICITY] Found {pair_count} distant duplicate pairs for hash {hash_val} (capped to {capped_pairs})")
 
         total_blocks = blocks_processed if blocks_processed > 0 else 0
 
         if total_blocks == 0:
             return 0.5
 
+        # Normalize by number of processed blocks to get a forgery-like ratio
         forgery_ratio = duplicate_pairs / float(total_blocks)
 
-        if forgery_ratio > 0.06:
-            logger.warning(f"[AUTHENTICITY] High copy-move forgery ratio: {forgery_ratio:.2%}")
+        logger.debug(f"[AUTHENTICITY] duplicate_pairs={duplicate_pairs}, blocks_processed={blocks_processed}, forgery_ratio={forgery_ratio:.4f}")
+
+        # Thresholds calibrated for distant-pair based metric
+        if forgery_ratio > 0.06:  # >6% distant-pair rate = suspicious
+            logger.warning(f"[AUTHENTICITY] High copy-move forgery ratio (distant pairs): {forgery_ratio:.2%}")
             return 0.15
         elif forgery_ratio > 0.02:
-            logger.info(f"[AUTHENTICITY] Moderate copy-move ratio: {forgery_ratio:.2%}")
+            logger.info(f"[AUTHENTICITY] Moderate copy-move ratio (distant pairs): {forgery_ratio:.2%}")
             return 0.55
         else:
-            logger.debug(f"[AUTHENTICITY] Low copy-move ratio: {forgery_ratio:.2%}")
+            logger.debug(f"[AUTHENTICITY] Low copy-move ratio (distant pairs): {forgery_ratio:.2%}")
             return 0.92
     
     except Exception as e:
@@ -223,24 +282,48 @@ def detect_copy_move_forgery(img: np.ndarray, block_size: int = 32, threshold: f
         return 0.5
 
 
+# ============================================================================
+# 3. COMPRESSION ARTIFACT ANALYSIS
+# ============================================================================
+
 def analyze_jpeg_artifacts(image_path: str) -> float:
-    """Detect JPEG re-compression artifacts."""
+    """
+    Detect JPEG re-compression artifacts (sign of tampering).
+    
+    Multiple save cycles create unnatural compression patterns.
+    
+    Returns:
+        Float score 0.0-1.0 where 0.0 = likely re-compressed, 1.0 = single save
+    """
     try:
         if not image_path.lower().endswith(('.jpg', '.jpeg')):
+            logger.debug("[AUTHENTICITY] Not a JPEG - skipping artifact analysis")
             return 0.7
         
         img = cv2.imread(image_path)
+        
+        # Compute DCT coefficients (JPEG uses DCT)
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        
+        # Compute 2D DCT
         dct = cv2.dct(np.float32(gray) / 255.0)
+        
+        # Analyze coefficient distribution
+        # Re-compressed images show unnatural patterns
         coeff_histogram = cv2.calcHist([dct], [0], None, [256], [0, 1])
+        
+        # Look for sharp peaks (sign of re-compression)
         peak_count = np.sum(coeff_histogram > np.mean(coeff_histogram) * 2)
         peak_ratio = peak_count / len(coeff_histogram)
         
         if peak_ratio > 0.3:
+            logger.warning(f"[AUTHENTICITY] High compression artifacts detected (ratio: {peak_ratio:.2%})")
             return 0.4
         elif peak_ratio > 0.15:
+            logger.info(f"[AUTHENTICITY] Moderate compression artifacts (ratio: {peak_ratio:.2%})")
             return 0.7
         else:
+            logger.debug("[AUTHENTICITY] Low compression artifacts - likely single save")
             return 0.9
     
     except Exception as e:
@@ -249,7 +332,9 @@ def analyze_jpeg_artifacts(image_path: str) -> float:
 
 
 def analyze_compression_artifacts(image_path: str) -> Dict[str, Any]:
-    """Comprehensive compression artifact analysis."""
+    """
+    Comprehensive compression artifact analysis.
+    """
     jpeg_score = analyze_jpeg_artifacts(image_path)
     
     return {
@@ -263,8 +348,22 @@ def analyze_compression_artifacts(image_path: str) -> Dict[str, Any]:
     }
 
 
+# ============================================================================
+# 4. FONT CONSISTENCY CHECK
+# ============================================================================
+
 def check_ocr_confidence_consistency(ocr_results: List[Tuple[str, float, Tuple]]) -> float:
-    """Analyze OCR confidence scores to detect edited text."""
+    """
+    Analyze OCR confidence scores to detect edited text.
+    
+    EasyOCR provides confidence per line. Sudden drops indicate potential edits.
+    
+    Args:
+        ocr_results: List of (text, confidence, bbox) from EasyOCR
+    
+    Returns:
+        Float score 0.0-1.0 where 1.0 = consistent confidence, 0.0 = suspicious variance
+    """
     try:
         if not ocr_results or len(ocr_results) < 2:
             return 0.8
@@ -278,15 +377,24 @@ def check_ocr_confidence_consistency(ocr_results: List[Tuple[str, float, Tuple]]
         if not confidences:
             return 0.8
         
+        # Analyze confidence distribution
         mean_conf = np.mean(confidences)
         std_conf = np.std(confidences)
+        
+        # High variance in confidence = potential text alterations
         cv = std_conf / mean_conf if mean_conf > 0 else 0
         
-        if cv > 0.3:
+        if cv > 0.3:  # Coefficient of variation > 30% = suspicious
+            logger.warning(f"[AUTHENTICITY] High OCR confidence variance (CV: {cv:.2f})")
+            min_conf = min(confidences)
+            max_conf = max(confidences)
+            logger.debug(f"[AUTHENTICITY] Confidence range: {min_conf:.2f} - {max_conf:.2f}")
             return 0.4
         elif cv > 0.15:
+            logger.info(f"[AUTHENTICITY] Moderate OCR variance (CV: {cv:.2f})")
             return 0.7
         else:
+            logger.debug(f"[AUTHENTICITY] Consistent OCR confidence (CV: {cv:.2f})")
             return 0.9
     
     except Exception as e:
@@ -295,7 +403,9 @@ def check_ocr_confidence_consistency(ocr_results: List[Tuple[str, float, Tuple]]
 
 
 def analyze_font_consistency(img: np.ndarray, ocr_results: List[Any]) -> Dict[str, Any]:
-    """Analyze font consistency across detected text regions."""
+    """
+    Analyze font consistency across detected text regions.
+    """
     confidence_score = 0.8
     if ocr_results:
         confidence_score = check_ocr_confidence_consistency(ocr_results)
@@ -310,13 +420,31 @@ def analyze_font_consistency(img: np.ndarray, ocr_results: List[Any]) -> Dict[st
     }
 
 
+# ============================================================================
+# 5. SEMANTIC CONSISTENCY CHECK (LLM-based)
+# ============================================================================
+
 def check_semantic_consistency_with_llm(raw_text: str) -> Dict[str, Any]:
-    """Use Gemini LLM to check logical consistency in receipt data."""
+    """
+    Use Gemini LLM to check logical consistency in receipt data.
+    
+    Detects:
+        - Amount math inconsistencies
+        - Date format conflicts
+        - Mismatched line items and totals
+        - Logical contradictions
+    
+    This is called from llm_validation.extract_with_llm with enhanced prompt.
+    
+    Returns:
+        Dictionary with authenticity indicators
+    """
     try:
         import google.generativeai as genai
         from config import settings
         
         if not settings.GEMINI_API_KEY:
+            logger.warning("[AUTHENTICITY] GEMINI_API_KEY not configured - skipping semantic check")
             return {"error": "GEMINI_API_KEY not configured", "authenticity_confidence": 0.5}
         
         genai.configure(api_key=settings.GEMINI_API_KEY)
@@ -327,9 +455,12 @@ def check_semantic_consistency_with_llm(raw_text: str) -> Dict[str, Any]:
 Text:
 {raw_text[:800]}
 
-Check: 1) spacing consistency 2) date formats 3) layout typical
+Check ONLY these 3 things:
+1. Look at the spaces in the receipt does it all look consistent?
+2. Are date formats consistent? (true/false)
+3. Does layout look typical? (true/false)
 
-Output JSON only:
+Output ONLY valid JSON (no text before or after):
 {{"amounts_consistent": true, "date_format_consistent": true, "layout_typical": true, "authenticity_confidence": 0.75, "recommendation": "authentic"}}"""
         
         from google.generativeai.types import HarmCategory, HarmBlockThreshold
@@ -342,38 +473,118 @@ Output JSON only:
         
         response = model.generate_content(
             semantic_prompt,
-            generation_config=genai.types.GenerationConfig(temperature=0.1, max_output_tokens=200),
+            generation_config=genai.types.GenerationConfig(
+                temperature=0.1,
+                max_output_tokens=200  # REDUCED from 1024 to avoid truncation
+            ),
             safety_settings=safety_settings
         )
         
+        # Check finish_reason before accessing response.text
         if response.candidates and len(response.candidates) > 0:
             candidate = response.candidates[0]
             
-            if candidate.finish_reason in [2, 3]:
-                return {"authenticity_confidence": 0.5, "recommendation": "review"}
+            # Handle truncation (finish_reason == 2 = MAX_TOKENS)
+            if candidate.finish_reason == 2:
+                logger.warning("[AUTHENTICITY] LLM response truncated (MAX_TOKENS) - returning neutral score")
+                return {
+                    "authenticity_confidence": 0.5,
+                    "recommendation": "review",
+                    "amounts_consistent": True,
+                    "date_format_consistent": True,
+                    "layout_typical": True,
+                    "error": "Response truncated"
+                }
             
+            # Handle safety blocks (finish_reason == 3 = SAFETY)
+            if candidate.finish_reason == 3:
+                logger.warning("[AUTHENTICITY] LLM response blocked by safety filters")
+                return {
+                    "authenticity_confidence": 0.5,
+                    "recommendation": "review",
+                    "error": "Safety filter triggered"
+                }
+            
+            # Check if content is available before accessing response.text
             if not candidate.content or not candidate.content.parts:
-                return {"authenticity_confidence": 0.5, "recommendation": "review"}
+                logger.warning("[AUTHENTICITY] LLM returned no content")
+                return {
+                    "authenticity_confidence": 0.5,
+                    "recommendation": "review",
+                    "error": "No response content"
+                }
             
+            # Now safe to access response.text
             response_text = response.text.strip()
             
+            # Extract JSON
             import re
             json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', response_text, re.DOTALL)
             if json_match:
-                result = json.loads(json_match.group(0))
-                result.setdefault("authenticity_confidence", 0.5)
-                result.setdefault("recommendation", "review")
-                return result
-        
-        return {"authenticity_confidence": 0.5, "recommendation": "review"}
+                try:
+                    result = json.loads(json_match.group(0))
+                    
+                    # Ensure required fields exist
+                    result.setdefault("authenticity_confidence", 0.5)
+                    result.setdefault("recommendation", "review")
+                    result.setdefault("amounts_consistent", True)
+                    result.setdefault("date_format_consistent", True)
+                    result.setdefault("layout_typical", True)
+                    
+                    logger.info(f"[AUTHENTICITY] LLM semantic check: {result.get('recommendation')} "
+                              f"(confidence: {result.get('authenticity_confidence')})")
+                    return result
+                except json.JSONDecodeError as je:
+                    logger.warning(f"[AUTHENTICITY] Failed to parse JSON: {je}")
+                    return {
+                        "authenticity_confidence": 0.5,
+                        "recommendation": "review",
+                        "error": f"JSON parse error: {str(je)}"
+                    }
+            else:
+                logger.warning(f"[AUTHENTICITY] No JSON found in response: {response_text[:100]}")
+                return {
+                    "authenticity_confidence": 0.5,
+                    "recommendation": "review",
+                    "error": "No JSON in response"
+                }
+        else:
+            logger.warning("[AUTHENTICITY] No candidates returned from Gemini API")
+            return {
+                "authenticity_confidence": 0.5,
+                "recommendation": "review",
+                "error": "No API response"
+            }
     
     except Exception as e:
         logger.warning(f"[AUTHENTICITY] Error in semantic check: {e}")
-        return {"authenticity_confidence": 0.5, "recommendation": "review", "error": str(e)}
+        import traceback
+        logger.debug(f"[AUTHENTICITY] Traceback: {traceback.format_exc()}")
+        return {
+            "authenticity_confidence": 0.5,
+            "recommendation": "review",
+            "error": str(e)
+        }
 
+
+# ============================================================================
+# 6. NOISE PATTERN ANALYSIS
+# ============================================================================
 
 def analyze_noise_distribution(gray: np.ndarray, regions: int = 4) -> Dict[str, float]:
-    """Analyze noise distribution across image regions."""
+    """
+    Analyze noise distribution across image regions.
+    
+    Uniform noise = authentic camera/scan capture.
+    Patchy noise = possible edited regions.
+    
+    Args:
+        gray: Grayscale image
+        regions: Number of regions to divide image into (default 4 = 2x2 grid)
+    
+    Returns:
+        Dictionary with noise scores per region
+    """
     try:
         height, width = gray.shape
         region_size = int(np.sqrt(regions))
@@ -391,22 +602,30 @@ def analyze_noise_distribution(gray: np.ndarray, regions: int = 4) -> Dict[str, 
                 x_end = (j + 1) * region_w if j < region_size - 1 else width
 
                 region = gray[y_start:y_end, x_start:x_end]
+
+                # Apply bilateral filter
                 smoothed = cv2.bilateralFilter(region, 9, 75, 75)
                 diff = cv2.absdiff(region, smoothed)
                 noise_var = float(np.var(diff))
+                # normalize noise_var into a 0-1 heuristic
                 noise_score = noise_var / (noise_var + 1.0)
                 region_key = f"region_{i}_{j}"
                 noise_scores[region_key] = noise_score
+                logger.debug(f"[AUTHENTICITY] {region_key} noise score: {noise_score:.4f}")
 
+        # Calculate coefficient of variation across regions
         noise_values = list(noise_scores.values())
         if len(noise_values) > 1:
             mean_noise = float(np.mean(noise_values))
             std_noise = float(np.std(noise_values))
             cv_noise = std_noise / mean_noise if mean_noise > 0 else 0
+
+            # uniformity_score: higher means more uniform noise => more likely authentic
             uniformity_score = max(0.0, 1.0 - cv_noise)
             noise_scores["cv_noise"] = cv_noise
             noise_scores["uniformity_score"] = round(float(uniformity_score), 3)
         else:
+            # Not enough regions; return neutral uniformity
             noise_scores["cv_noise"] = 0.0
             noise_scores["uniformity_score"] = 0.7
 
@@ -417,34 +636,59 @@ def analyze_noise_distribution(gray: np.ndarray, regions: int = 4) -> Dict[str, 
         return {"error": str(e)}
 
 
+# ============================================================================
+# 7. OPTICAL/PERSPECTIVE DISTORTION CHECK
+# ============================================================================
+
 def check_perspective_integrity(img: np.ndarray, edge_threshold: float = 0.02) -> float:
-    """Detect unnatural perspective or perfectly straight edges."""
+    """
+    Detect unnatural perspective or perfectly straight edges (sign of digital creation).
+    
+    Real receipt photos have slight skew; pixel-perfect rectangles suggest doctoring.
+    
+    Args:
+        img: Image as numpy array
+        edge_threshold: Threshold for edge detection
+    
+    Returns:
+        Float score 0.0-1.0 where 1.0 = natural perspective, 0.0 = suspicious perfection
+    """
     try:
         if len(img.shape) == 3:
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         else:
             gray = img
         
+        # Edge detection
         edges = cv2.Canny(gray, 50, 150)
+        
+        # Detect lines using Hough transform
         lines = cv2.HoughLines(edges, 1, np.pi / 180, 100)
         
         if lines is None or len(lines) == 0:
+            logger.debug("[AUTHENTICITY] No clear lines detected - natural perspective")
             return 0.8
         
+        # Extract angles from lines
         angles = []
         for line in lines:
             rho, theta = line[0]
             angle = np.degrees(theta)
             angles.append(angle)
         
+        # Check for perfectly horizontal/vertical lines
+        # Real photos have slight variations; doctored images have exact 90°, 0°
         perfect_angles = sum(1 for angle in angles if abs(angle) < 1 or abs(angle - 90) < 1)
         perfect_ratio = perfect_angles / len(angles) if lines is not None else 0
         
         if perfect_ratio > 0.7:
+            logger.warning(f"[AUTHENTICITY] Too many perfect angles ({perfect_ratio:.1%}) - likely digitally created")
             return 0.3
         elif perfect_ratio > 0.4:
+            logger.info(f"[AUTHENTICITY] Moderate angle perfection ({perfect_ratio:.1%})")
             return 0.6
         else:
+            logger.debug(f"[AUTHENTICITY] Natural perspective variation ({perfect_ratio:.1%})")
             return 0.9
     
     except Exception as e:
@@ -453,7 +697,7 @@ def check_perspective_integrity(img: np.ndarray, edge_threshold: float = 0.02) -
 
 
 # ============================================================================
-# MAIN AUTHENTICITY CHECK FUNCTION - UPDATED WITH DEEP LEARNING
+# MAIN AUTHENTICITY CHECK FUNCTION
 # ============================================================================
 
 def check_image_authenticity(
@@ -463,8 +707,7 @@ def check_image_authenticity(
     raw_ocr_text: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Comprehensive image authenticity check using 9 forensic methods.
-    NOW INCLUDES: TruFor and ManTraNet deep learning models.
+    Comprehensive image authenticity check using all 7 forensic methods.
     
     Args:
         img: Image as numpy array
@@ -481,42 +724,48 @@ def check_image_authenticity(
     except Exception as e:
         logger.warning(f"[AUTHENTICITY] Initial perspective check failed: {e}")
 
+# *** NEW HEURISTIC: Check if image is likely a digital screenshot/export ***
+# If the perspective score is very low (too many perfect angles), treat it as digital source.
     IS_LIKELY_DIGITAL_EXPORT = perspective_score < 0.45
     if IS_LIKELY_DIGITAL_EXPORT:
         logger.warning("[AUTHENTICITY] Detected likely digital export (perfect angles). Adjusting heuristics.")
-    
     indicators = []
     
-    # 1. Metadata Analysis (Weight: 0.08)
+    # 1. Metadata Analysis(10)
     if image_path:
         try:
             metadata_score = check_metadata_integrity(image_path)
             indicators.append({
                 "check": "metadata_integrity",
                 "score": metadata_score,
-                "weight": 0.08,
+                "weight": 0.10,
                 "description": "EXIF metadata analysis"
             })
+            logger.debug(f"[AUTHENTICITY] Metadata score: {metadata_score:.2f}")
         except Exception as e:
             logger.warning(f"[AUTHENTICITY] Metadata check failed: {e}")
     
-    # 2. Copy-Move Detection (Weight: 0.25 - reduced from 0.35)
+    # 2. Copy-Move Detection (35)
     try:
         raw_copy_move_score = detect_copy_move_forgery(img)
         copy_move_score = raw_copy_move_score
         if IS_LIKELY_DIGITAL_EXPORT:
-            copy_move_score = 0.85
+        # Neutralize Copy-Move for digital exports (UI repetition causes high false positive rate)
+            copy_move_score = 0.85 
+            logger.warning(f"[AUTHENTICITY] Copy-Move neutralized to {copy_move_score:.2f} due to digital export flag.")
+        # Copy_move_score = detect_copy_move_forgery(img)
         indicators.append({
             "check": "copy_move_detection",
             "score": copy_move_score,
-            "weight": 0.25,
+            "weight": 0.35,
             "description": "Pixel-level copy-move forgery detection",
             "raw_score": raw_copy_move_score
         })
+        logger.debug(f"[AUTHENTICITY] Copy-move score: {copy_move_score:.2f}")
     except Exception as e:
         logger.warning(f"[AUTHENTICITY] Copy-move detection failed: {e}")
     
-    # 3. Compression Artifacts (Weight: 0.04)
+    # 3. Compression Artifacts(10)
     if image_path:
         try:
             comp_analysis = analyze_compression_artifacts(image_path)
@@ -524,26 +773,28 @@ def check_image_authenticity(
             indicators.append({
                 "check": "compression_artifacts",
                 "score": comp_score,
-                "weight": 0.04,
+                "weight": 0.05,
                 "description": "JPEG re-compression artifact detection"
             })
+            logger.debug(f"[AUTHENTICITY] Compression score: {comp_score:.2f}")
         except Exception as e:
             logger.warning(f"[AUTHENTICITY] Compression analysis failed: {e}")
     
-    # 4. Font Consistency (Weight: 0.10)
+    # 4. Font Consistency(15)
     try:
         font_analysis = analyze_font_consistency(img, ocr_results)
         font_score = font_analysis.get("ocr_confidence_consistency", 0.7)
         indicators.append({
             "check": "font_consistency",
             "score": font_score,
-            "weight": 0.10,
+            "weight": 0.15,
             "description": "OCR confidence and font consistency"
         })
+        logger.debug(f"[AUTHENTICITY] Font consistency score: {font_score:.2f}")
     except Exception as e:
         logger.warning(f"[AUTHENTICITY] Font consistency check failed: {e}")
     
-    # 5. Semantic Consistency (Weight: 0.10)
+    # 5. Semantic Consistency (LLM)(15)
     if raw_ocr_text:
         try:
             semantic_result = check_semantic_consistency_with_llm(raw_ocr_text)
@@ -551,13 +802,14 @@ def check_image_authenticity(
             indicators.append({
                 "check": "semantic_consistency",
                 "score": semantic_score,
-                "weight": 0.10,
+                "weight": 0.15,
                 "description": "LLM-based logical consistency check"
             })
+            logger.debug(f"[AUTHENTICITY] Semantic score: {semantic_score:.2f}")
         except Exception as e:
             logger.warning(f"[AUTHENTICITY] Semantic check failed: {e}")
     
-    # 6. Noise Distribution (Weight: 0.04)
+    # 6. Noise Distribution(5)
     try:
         if len(img.shape) == 3:
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -569,61 +821,33 @@ def check_image_authenticity(
         indicators.append({
             "check": "noise_distribution",
             "score": noise_score,
-            "weight": 0.04,
+            "weight": 0.05,
             "description": "Regional noise pattern analysis"
         })
+        logger.debug(f"[AUTHENTICITY] Noise score: {noise_score:.2f}")
     except Exception as e:
         logger.warning(f"[AUTHENTICITY] Noise analysis failed: {e}")
     
-    # 7. Perspective Distortion (Weight: 0.09)
+    # 7. Perspective Distortion(20)
     try:
+        # Use the score calculated earlier
         final_perspective_score = perspective_score
         if IS_LIKELY_DIGITAL_EXPORT:
-            final_perspective_score = 0.90
+        # Neutralize score to authentic/high because perfect angles are normal for digital exports
+            final_perspective_score = 0.90 
+            logger.warning(f"[AUTHENTICITY] Perspective neutralized to {final_perspective_score:.2f} due to digital export flag.")
+        #perspective_score = check_perspective_integrity(img)
         indicators.append({
             "check": "perspective_distortion",
-            "score": final_perspective_score,
-            "weight": 0.09,
+            "score": perspective_score,
+            "weight": 0.15,
             "description": "Optical perspective and edge integrity"
         })
+        logger.debug(f"[AUTHENTICITY] Perspective score: {perspective_score:.2f}")
     except Exception as e:
         logger.warning(f"[AUTHENTICITY] Perspective check failed: {e}")
     
-    # ========================================================================
-    # 8 & 9. DEEP LEARNING MODELS - TruFor + ManTraNet (Weight: 0.30)
-    # ========================================================================
-    deep_learning_result = None
-    if DEEP_LEARNING_AVAILABLE:
-        try:
-            logger.info("[AUTHENTICITY] Running deep learning forgery detection (TruFor + ManTraNet)...")
-            deep_learning_result = check_deep_forgery(img)
-            
-            if not deep_learning_result.get("error"):
-                dl_score = deep_learning_result.get("authenticity_score", 0.5)
-                models_used = deep_learning_result.get("models_used", [])
-                
-                indicators.append({
-                    "check": "deep_learning_forgery",
-                    "score": dl_score,
-                    "weight": 0.30,  # Highest weight - DL models are most accurate
-                    "description": f"Deep learning forgery detection ({', '.join(models_used)})",
-                    "models_used": models_used,
-                    "has_manipulation": deep_learning_result.get("has_manipulation", False)
-                })
-                
-                logger.info(f"[AUTHENTICITY] Deep learning score: {dl_score:.3f} "
-                           f"(models: {', '.join(models_used)})")
-            else:
-                logger.warning(f"[AUTHENTICITY] Deep learning check error: {deep_learning_result.get('error')}")
-                
-        except Exception as e:
-            logger.error(f"[AUTHENTICITY] Deep learning check failed: {e}")
-    else:
-        logger.info("[AUTHENTICITY] Deep learning models not available - using traditional methods only")
-    
-    # ========================================================================
     # Calculate weighted average
-    # ========================================================================
     if indicators:
         total_weight = sum(ind.get("weight", 0) for ind in indicators)
         weighted_sum = sum(ind["score"] * ind.get("weight", 0) for ind in indicators)
@@ -631,24 +855,22 @@ def check_image_authenticity(
     else:
         overall_authenticity = 0.5
     
-    # Apply hard fail override for extreme cases
+    # *** NEW LOGIC: HARD FAIL OVERRIDE ***
     raw_cm_score = next((ind["raw_score"] for ind in indicators if ind["check"] == "copy_move_detection"), 1.0)
     if not IS_LIKELY_DIGITAL_EXPORT and raw_cm_score < 0.20:
-        logger.warning(f"[AUTHENTICITY] CRITICAL FAIL: Raw Copy-Move score={raw_cm_score:.2f}")
+    # Only apply hard fail if it's a photo/scan AND the raw copy-move score is critically low
+        logger.warning(f"[AUTHENTICITY] CRITICAL FAIL OVERRIDE: Raw Copy-Move score is extremely low ({raw_cm_score:.2f}). Forcing low score.")
+        # Force the score down so it lands in the LIKELY_FORGED bucket
         overall_authenticity = min(overall_authenticity, 0.40)
-    
-    # Additional override: if deep learning models strongly disagree
-    if deep_learning_result and not deep_learning_result.get("error"):
-        dl_score = deep_learning_result.get("authenticity_score", 0.5)
-        # If DL models are very confident about forgery, override
-        if dl_score < 0.30 and deep_learning_result.get("has_manipulation"):
-            logger.warning(f"[AUTHENTICITY] Deep learning CRITICAL: score={dl_score:.2f}, forcing low score")
-            overall_authenticity = min(overall_authenticity, 0.35)
-    
-    # Determine recommendation
+    # === HARD FAIL OVERRIDE LOGIC ===
+            
     if overall_authenticity > 0.85:
         recommendation = "AUTHENTIC"
         confidence_level = "HIGH"
+    # Determine recommendation (use slightly stricter thresholds)
+    # if overall_authenticity > 0.70:
+    #     recommendation = "AUTHENTIC"
+    #     confidence_level = "HIGH"
     elif overall_authenticity > 0.70:
         recommendation = "LIKELY_AUTHENTIC"
         confidence_level = "MEDIUM"
@@ -665,17 +887,14 @@ def check_image_authenticity(
         "confidence_level": confidence_level,
         "indicators": indicators,
         "is_suspicious": overall_authenticity < 0.70,
-        "deep_learning_result": deep_learning_result,
         "details": {
             "total_checks_performed": len(indicators),
             "checks_passed": sum(1 for ind in indicators if ind["score"] > 0.7),
             "checks_failed": sum(1 for ind in indicators if ind["score"] < 0.4),
-            "is_digital_source": IS_LIKELY_DIGITAL_EXPORT,
-            "deep_learning_enabled": DEEP_LEARNING_AVAILABLE
+            "is_digital_source": IS_LIKELY_DIGITAL_EXPORT
         }
     }
     
-    logger.info(f"[AUTHENTICITY] Final Score: {overall_authenticity:.3f} - {recommendation} "
-               f"(DL enabled: {DEEP_LEARNING_AVAILABLE})")
+    logger.info(f"[AUTHENTICITY] Final Score: {overall_authenticity:.3f} - {recommendation}")
     
     return result
