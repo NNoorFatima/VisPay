@@ -3,9 +3,6 @@ const API_BASE_URL =
 
 /**
  * Upload a payment receipt for verification
- * @param {File} file - The receipt image file
- * @param {string} preprocessingMethod - Optional preprocessing method (auto, minimal, light, medium, advanced, morphology, scale_aware)
- * @returns {Promise<Object>} Verification result
  */
 export async function verifyPayment(file, preprocessingMethod = null) {
   const formData = new FormData();
@@ -33,19 +30,28 @@ export async function verifyPayment(file, preprocessingMethod = null) {
 
 /**
  * Search for similar products using visual search
- * @param {File} file - The product image file
- * @param {number} topK - Number of top matches to return (1-20)
- * @param {number} colorWeight - Weight for color similarity (0-1)
- * @returns {Promise<Object>} Search results
+ * CORRECTED VERSION
  */
-export async function searchProduct(file, topK = 5, colorWeight = 0.3) {
+export async function searchProduct(file, topK = 5, colorWeight = 0.3, userCategory = null) {
   const formData = new FormData();
   formData.append("query_image", file);
 
+  // 1. Create the URL Object
   const url = new URL(`${API_BASE_URL}/api/v1/product/search`);
+
+  // 2. Use .append() for ALL parameters (Do not use += string concatenation)
+  if (userCategory) {
+    url.searchParams.append("user_category", userCategory);
+  }
+  
   url.searchParams.append("top_k", topK.toString());
   url.searchParams.append("color_weight", colorWeight.toString());
+  
+  // Optional: Add visual_weight (calculated as 1 - color) if your backend uses it
+  const visualWeight = (1 - colorWeight).toFixed(2);
+  url.searchParams.append("visual_weight", visualWeight);
 
+  // 3. Perform Fetch
   const response = await fetch(url.toString(), {
     method: "POST",
     body: formData,
@@ -63,18 +69,18 @@ export async function searchProduct(file, topK = 5, colorWeight = 0.3) {
 
 /**
  * Get the full URL for an image from the backend
- * @param {string} imagePath - Relative image path from backend
- * @returns {string} Full URL
  */
 export function getImageUrl(imagePath) {
   if (!imagePath) return null;
   if (imagePath.startsWith("http")) return imagePath;
-  return `${API_BASE_URL}${imagePath.startsWith("/") ? "" : "/"}${imagePath}`;
+  // Handle relative paths robustly
+  const baseUrl = API_BASE_URL.replace(/\/+$/, ""); // Remove trailing slash
+  const path = imagePath.replace(/^\/+/, ""); // Remove leading slash
+  return `${baseUrl}/${path}`;
 }
 
 /**
  * Check API health
- * @returns {Promise<Object>} Health status
  */
 export async function checkHealth() {
   const response = await fetch(`${API_BASE_URL}/health`);
