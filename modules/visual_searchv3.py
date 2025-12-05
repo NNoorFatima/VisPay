@@ -33,7 +33,26 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 logger = logging.getLogger(__name__)
 
 # ==================== Utilities ====================
+# --- modules/visual_searchv3.py (Insert near the top utilities) ---
 
+def clean_for_json(data: Union[Dict, List]) -> Union[Dict, List]:
+    """
+    Recursively converts NumPy arrays and types to standard Python types 
+    (list/float) to ensure JSON serializability.
+    """
+    if isinstance(data, dict):
+        return {k: clean_for_json(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [clean_for_json(item) for item in data]
+    # Check for numpy array or numpy numeric types (e.g., np.float64, np.int32)
+    elif isinstance(data, np.ndarray):
+        return data.tolist()
+    elif isinstance(data, (np.generic, np.number)):
+        return data.item()
+    else:
+        return data
+
+# --- END of Helper Function ---
 def _ensure_pil(img: Union[str, np.ndarray, Image.Image]) -> Optional[Image.Image]:
     """Robustly convert any image input to PIL RGB."""
     try:
@@ -164,7 +183,7 @@ class CLIPMatcher:
     #     predicted_label = labels_map[top_idx]
     #     print(f"Predicted category: {predicted_label}")
     #     return predicted_label, float(probs[top_idx])
-    def predict_category(self, img_input, threshold: float = 0.01) -> Tuple[str, float]:
+    def predict_category(self, img_input, threshold: float = 0.11) -> Tuple[str, float]:
         """
         Smart prediction with Confidence Thresholding.
         Returns ('unknown', conf) if below threshold.
@@ -404,22 +423,32 @@ class HybridFashionSearch:
         pred_category, conf = self.clip.predict_category(query_pil)
         pred_color, _ = self.clip.predict_color(query_pil)
 
+        # Handle failed feature extraction
+        if query_clip is None or query_visual is None:
+             return [], "Error: Failed to extract features from query image."
+
         # === 3. Determine Search Space ===
         use_category = user_selected_category or pred_category
         logger.info(f"Search Category: '{use_category}' (User Selected: {user_selected_category is not None})")
 
         # === 4. Category Availability Check ===
         if use_category not in self.faiss_indices:
-            # Scenario A: User manually asked for "Watch", but you don't have any.
-            # ACTION: Strict Empty Return (Don't show random dresses).
+            # Scenario A: User manually asked for category not in inventory.
             if user_selected_category:
                 logger.warning(f"User requested '{user_selected_category}' but it is not in inventory.")
                 return [], f"Sorry, we have no products in the category: '{user_selected_category}'"
             
             # Scenario B: AI guessed "Unknown" or a category you don't stock.
-            # ACTION: Fallback to Random/Similar visual items (Better UX than empty screen).
+            # ACTION: Fallback to Smart Search over entire inventory (Better UX).
             if category_filter:
-                return self._get_random_fallback(top_k, pred_color), f"Category '{use_category}' not in stock. Showing random items."
+                # === GENIUS CODER FIX 1 (Replacement) ===
+                fallback_results = self._get_smart_fallback(query_clip, top_k, pred_color)
+                
+                if fallback_results:
+                     return fallback_results, f"Category '{use_category}' not in stock. Showing smart fallback items."
+                else:
+                     return [], f"Category '{use_category}' not in stock. No items found for fallback."
+                # === END GENIUS CODER FIX 1 ===
 
         # === 5. Perform FAISS Search ===
         if use_category in self.faiss_indices:
@@ -466,26 +495,91 @@ class HybridFashionSearch:
             return results[:top_k], status
             
         else:
-            # Catch-all fallback
-            return self._get_random_fallback(top_k, pred_color), "Category unknown, showing random."
+            # Catch-all fallback (This line is generally defensive and should be hit less often than 4.B)
+            # === GENIUS CODER FIX 2 (Replacement) ===
+            fallback_results = self._get_smart_fallback(query_clip, top_k, pred_color)
+            return fallback_results, f"Category '{use_category}' unknown, showing smart fallback."
+            # === END GENIUS CODER FIX 2 ===
+    def _get_smart_fallback(self, query_clip: np.ndarray, top_k: int, pred_color: str) -> List[Dict]:
+        """
+        Performs a smart fallback search over ALL inventory items using the CLIP vector.
+        This provides visually/semantically relevant items even when the category is unknown/not in inventory.
+        """
+        
+        # Check if a combined index for ALL CLIP vectors exists
+        if 'all_clip_vectors' not in self.faiss_indices:
+            # NOTE: For production, this should be pre-calculated in build_index.
+            # This is a one-time build if it doesn't exist.
+            logger.info("Building all-inventory CLIP index for fallback...")
+            
+            all_fnames = [k for k in self.inventory_data.keys() if not k.endswith("_faiss_map")]
+            if not all_fnames: return []
+            
+            # Collect all CLIP vectors
+            all_vectors = np.array([
+                self.inventory_data[f]["clip_features"] 
+                for f in all_fnames 
+                if "clip_features" in self.inventory_data[f]
+            ]).astype('float32')
 
-    def _get_random_fallback(self, top_k, color):
-        all_items = [k for k in self.inventory_data.keys() if not k.endswith("_faiss_map")]
-        if not all_items: return []
-        random_items = random.sample(all_items, min(top_k, len(all_items)))
+            if all_vectors.size == 0: return []
+            
+            d = all_vectors.shape[1]
+            index = faiss.IndexFlatL2(d)
+            index.add(all_vectors)
+            self.faiss_indices['all_clip_vectors'] = index
+            self.inventory_data['all_clip_map'] = all_fnames
+            
+        index = self.faiss_indices['all_clip_vectors']
+        map_list = self.inventory_data['all_clip_map']
+
+        # Perform search against the entire index
+        D, I = index.search(query_clip.reshape(1, -1).astype('float32'), top_k)
+        
         results = []
-        for f in random_items:
-            item = self.inventory_data[f]
-            results.append({
-                "filename": f,
-                "product_image": f,
-                "score": 0.0,
-                "similarity_score": 0.0,
-                "category": item.get("category", "unknown"),
-                "reason": "fallback",
-                "predicted_color": color,
-            })
-        return results
+        if len(I) > 0:
+            for idx_val in I[0]:
+                if 0 <= idx_val < len(map_list):
+                    fname = map_list[idx_val]
+                    item = self.inventory_data[fname]
+                    
+                    # Similarity score is derived from distance D (L2 distance), convert to score (1 - distance_normalized)
+                    # For simplicity here, we'll just use the normalized CLIP score later.
+                    clip_sim = float(np.dot(query_clip, item["clip_features"]))
+                    
+                    results.append({
+                        "filename": fname,
+                        "product_image": fname,
+                        "score": clip_sim,
+                        "similarity_score": clip_sim,
+                        "clip_sim": clip_sim,
+                        "semantic_similarity": clip_sim,
+                        "visual_sim": item.get("visual_features", 0.0), # No explicit visual search was done
+                        "category": item.get("category", "unknown"),
+                        "reason": "smart_fallback_clip",
+                        "predicted_color": pred_color,
+                        "match_confidence": int(clip_sim * 100),
+                    })
+            
+        results.sort(key=lambda x: x["score"], reverse=True)
+        return results[:top_k]
+    # def _get_random_fallback(self, top_k, color):
+    #     all_items = [k for k in self.inventory_data.keys() if not k.endswith("_faiss_map")]
+    #     if not all_items: return []
+    #     random_items = random.sample(all_items, min(top_k, len(all_items)))
+    #     results = []
+    #     for f in random_items:
+    #         item = self.inventory_data[f]
+    #         results.append({
+    #             "filename": f,
+    #             "product_image": f,
+    #             "score": 0.0,
+    #             "similarity_score": 0.0,
+    #             "category": item.get("category", "unknown"),
+    #             "reason": "fallback",
+    #             "predicted_color": color,
+    #         })
+    #     return results
 
 
 # ==================== Public API (V3 Compatible) ====================
@@ -508,6 +602,9 @@ def get_index(inventory_dir: str, index_path: str = "data/hybrid_v4_index.pkl") 
         _global_index = idx
     return _global_index
 
+# --- modules/visual_searchv3.py (Inside HybridFashionSearch Class) ---
+
+
 def search_similar_products(
     query_img,
     inventory_dir: str,
@@ -525,22 +622,28 @@ def search_similar_products(
     # === CRITICAL FIX: Ensure models are loaded before accessing idx.clip ===
     # This wakes up the GPU/RAM models if they were sleeping (Lazy Loading)
     idx._init_models() 
-    
+    status_message = ""
+    results = []
     # === WORKFLOW LOGIC ===
-    
+    # 1B. Perform the search
+    try:
+        # This is the line that should define the variables
+        results, status_message = idx.search(query_img, top_k=top_k, user_selected_category=user_category, category_filter=True)
+    except Exception as e:
+        # If the search call fails entirely, we ensure status_message is set
+        logger.error(f"Error during user-category search: {e}", exc_info=True)
+        status_message = f"Search failed for category '{user_category}': {str(e)}"
     # 1. If User provided a category (User corrected the AI), strictly use it.
-    if user_category:
-        logger.info(f"User manually specified category: {user_category}")
-        results, status = idx.search(query_img, top_k=top_k, user_selected_category=user_category, category_filter=True)
-        # === GENIUS CODER: Missing Logic Check ===
+    # === GENIUS CODER: Robust Logic Check ===
         final_status = "success"
         if not results:
             final_status = "no_matches"
-            # If the status_message is generic ("Found in category"), replace it with the specific 
-            # error message returned by idx.search (Scenario A from idx.search)
-            if "Found in" in status_message or "Found in " not in status_message: 
+            
+            # Overwrite a generic "Found in X" status with the specific 'No products found' message.
+            if not status_message or "Found in" in status_message: 
                 status_message = f"No products found in the category: '{user_category}'."
-        # === END GENIUS CODER: Missing Logic Check ===
+        # === END GENIUS CODER: Robust Logic Check ===
+        
         return {
             "status": final_status, # Use the determined status
             "category_used": user_category,
@@ -552,7 +655,7 @@ def search_similar_products(
     img_pil = _ensure_pil(query_img)
     
     # Now this will work because idx.clip is no longer None
-    predicted_cat, conf = idx.clip.predict_category(img_pil, threshold=0.01)
+    predicted_cat, conf = idx.clip.predict_category(img_pil, threshold=0.11)
     
     # 3. CHECK THRESHOLD: If AI is confused ("unknown")
     if predicted_cat == "unknown":
@@ -563,7 +666,7 @@ def search_similar_products(
             "status": "needs_confirmation", 
             "category_used": "unknown",
             "confidence": conf,
-            "message": "Confidence too low. Please ask user for category.",
+            "message": "Couldn't find relevant products.Confidence too low.",
             "results": results, 
             "prompt_user": True 
         }
