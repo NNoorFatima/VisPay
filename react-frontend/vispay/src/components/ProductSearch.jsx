@@ -19,9 +19,10 @@ export default function ProductSearch({ onResultChange, onProcessingChange }) {
   const [results, setResults] = useState(null);
   const [error, setError] = useState(null);
   const [topK, setTopK] = useState(5);
-  const [colorWeight, setColorWeight] = useState(0.3);
+  // const [colorWeight, setColorWeight] = useState(0.3);
   const [showMethodInfo, setShowMethodInfo] = useState(false);
-
+const [clipWeight, setClipWeight] = useState(0.4); // New state for CLIP weight
+const [visualWeight, setVisualWeight] = useState(0.6); // New state for Visual weight
   // New State for Backend Messages (e.g., "Found in Watch" or "No Watches found")
   const [searchMessage, setSearchMessage] = useState(""); 
 
@@ -69,8 +70,11 @@ export default function ProductSearch({ onResultChange, onProcessingChange }) {
 
     try {
       const startTime = Date.now();
-      
-      const apiResult = await searchProduct(fileToUse, topK, colorWeight, categoryOverride);
+      // === GENIUS CODER CHANGE: Use explicit clipWeight and visualWeight ===
+      // NOTE: We pass both to the API call.
+      const apiResult = await searchProduct(fileToUse, topK, clipWeight, visualWeight, categoryOverride); 
+      // === END GENIUS CODER CHANGE ===
+      //const apiResult = await searchProduct(fileToUse, topK, colorWeight, categoryOverride);
       console.log("API Response:", apiResult);
 
       const processingTime = Date.now() - startTime;
