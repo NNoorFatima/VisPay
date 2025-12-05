@@ -164,7 +164,7 @@ class CLIPMatcher:
     #     predicted_label = labels_map[top_idx]
     #     print(f"Predicted category: {predicted_label}")
     #     return predicted_label, float(probs[top_idx])
-    def predict_category(self, img_input, threshold: float = 0.25) -> Tuple[str, float]:
+    def predict_category(self, img_input, threshold: float = 0.01) -> Tuple[str, float]:
         """
         Smart prediction with Confidence Thresholding.
         Returns ('unknown', conf) if below threshold.
@@ -543,7 +543,7 @@ def search_similar_products(
     img_pil = _ensure_pil(query_img)
     
     # Now this will work because idx.clip is no longer None
-    predicted_cat, conf = idx.clip.predict_category(img_pil, threshold=0.25)
+    predicted_cat, conf = idx.clip.predict_category(img_pil, threshold=0.01)
     
     # 3. CHECK THRESHOLD: If AI is confused ("unknown")
     if predicted_cat == "unknown":
