@@ -132,7 +132,7 @@ import numpy as np
 from pathlib import Path
 import uuid
 import logging
-
+from modules.visual_searchv3 import clean_for_json
 from modules.visual_searchv3 import search_similar_products
 from models.schemas import ProductSearchResponse, ProductMatch
 from fastapi.responses import JSONResponse
@@ -363,7 +363,7 @@ async def search_product_v3(
 
         # 4. Construct Smart Response
         # We use JSONResponse to handle the "alert_user" flag dynamically
-        return JSONResponse(content={
+        response_content = {
             "status": "success", 
             "alert_user": (status_status == "needs_confirmation"), # <--- FRONTEND LISTENS FOR THIS
             "alert_message": search_payload.get("message", ""),
@@ -371,11 +371,16 @@ async def search_product_v3(
             "confidence": search_payload.get("confidence", 0.0),
             
             # Standard Data
-            "matches": formatted_matches,
+            "matches": formatted_matches, # This list must be cleaned if it contains NumPy types
             "total_matches": len(formatted_matches),
             "query_image_url": query_image_url,
             "query_processed_image_url": query_processed_image_url
-        })
+        }
+        
+        # Apply the cleaner to the entire dictionary before passing it to JSONResponse
+        cleaned_content = clean_for_json(response_content)
+        
+        return JSONResponse(content=cleaned_content)
 
     except HTTPException:
         raise
