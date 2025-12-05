@@ -98,7 +98,8 @@ const [visualWeight, setVisualWeight] = useState(0.6); // New state for Visual w
       // 3. Transform for Parent Component (Optional)
       const searchResult = {
         type: "product",
-        status: apiResult.matches && apiResult.matches.length > 0 ? "success" : "no_results",
+        status: apiResult.status === "no_matches" ? "no_results" : (apiResult.matches && apiResult.matches.length > 0 ? "success" : "no_results"),
+        //status: apiResult.matches && apiResult.matches.length > 0 ? "success" : "no_results",
         apiResult,
         queryImageUrl: apiResult.query_image_url ? getImageUrl(apiResult.query_image_url) : null,
       };
@@ -110,15 +111,17 @@ const [visualWeight, setVisualWeight] = useState(0.6); // New state for Visual w
       setError(err.message || "Failed to search products");
       onResultChange?.({ type: "product", status: "error", error: err.message });
     } finally {
-      if (!showConfirmModal) {
-         updateProcessingState(false);
-      }
+      // === GENIUS CODER FIX: Always stop processing after API call is fully handled ===
+      // This ensures the "Analyzing..." loader goes away for success, no_matches, and error states.
+      updateProcessingState(false); 
+      // === END GENIUS CODER FIX ===
     }
   };
 
   const handleCategoryConfirm = (category) => {
     setShowConfirmModal(false);
     if (imageFile) {
+        updateProcessingState(true);
         performSearch(imageFile, category);
     } else {
         setError("Session expired. Please re-upload image.");
