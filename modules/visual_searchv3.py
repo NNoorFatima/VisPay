@@ -532,11 +532,20 @@ def search_similar_products(
     if user_category:
         logger.info(f"User manually specified category: {user_category}")
         results, status = idx.search(query_img, top_k=top_k, user_selected_category=user_category, category_filter=True)
+        # === GENIUS CODER: Missing Logic Check ===
+        final_status = "success"
+        if not results:
+            final_status = "no_matches"
+            # If the status_message is generic ("Found in category"), replace it with the specific 
+            # error message returned by idx.search (Scenario A from idx.search)
+            if "Found in" in status_message or "Found in " not in status_message: 
+                status_message = f"No products found in the category: '{user_category}'."
+        # === END GENIUS CODER: Missing Logic Check ===
         return {
-            "status": "success",
+            "status": final_status, # Use the determined status
             "category_used": user_category,
             "results": results,
-            "message": status
+            "message": status_message # Use the determined message
         }
 
     # 2. If no user category, try Auto-Detect (Smart Mode)
