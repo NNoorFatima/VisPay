@@ -35,3 +35,6 @@ Thumbs.db
 .idea/
 *.sublime-project
 *.sublime-workspace
+
+static/product_images.zip
+static.zip
