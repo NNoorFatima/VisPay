@@ -32,7 +32,7 @@ export async function verifyPayment(file, preprocessingMethod = null) {
  * Search for similar products using visual search
  * CORRECTED VERSION
  */
-export async function searchProduct(file, topK = 5, colorWeight = 0.3, userCategory = null) {
+export async function searchProduct(file, topK = 5, clipWeight = 0.4, visualWeight = 0.6, userCategory = null) {
   const formData = new FormData();
   formData.append("query_image", file);
 
@@ -45,11 +45,13 @@ export async function searchProduct(file, topK = 5, colorWeight = 0.3, userCateg
   }
   
   url.searchParams.append("top_k", topK.toString());
-  url.searchParams.append("color_weight", colorWeight.toString());
-  
+  //url.searchParams.append("color_weight", colorWeight.toString());
+  // These match the backend route definition
+  url.searchParams.append("clip_weight", clipWeight.toString());
+  url.searchParams.append("visual_weight", visualWeight.toString());
   // Optional: Add visual_weight (calculated as 1 - color) if your backend uses it
-  const visualWeight = (1 - colorWeight).toFixed(2);
-  url.searchParams.append("visual_weight", visualWeight);
+  // const visualWeight = (1 - colorWeight).toFixed(2);
+  // url.searchParams.append("visual_weight", visualWeight);
 
   // 3. Perform Fetch
   const response = await fetch(url.toString(), {
