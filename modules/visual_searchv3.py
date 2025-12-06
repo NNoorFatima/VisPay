@@ -183,7 +183,7 @@ class CLIPMatcher:
     #     predicted_label = labels_map[top_idx]
     #     print(f"Predicted category: {predicted_label}")
     #     return predicted_label, float(probs[top_idx])
-    def predict_category(self, img_input, threshold: float = 0.02) -> Tuple[str, float]:
+    def predict_category(self, img_input, threshold: float = 0.018) -> Tuple[str, float]:
         """
         Smart prediction with Confidence Thresholding.
         Returns ('unknown', conf) if below threshold.
@@ -407,11 +407,11 @@ class HybridFashionSearch:
         # === 1. Input Normalization (Fixes "Watch" vs "watch") ===
         if user_selected_category:
             user_selected_category = user_selected_category.lower().strip()
-            # Handle simple plurals (e.g., "watches" -> "watch")
-            if user_selected_category.endswith('es'): 
-                user_selected_category = user_selected_category[:-2]
-            elif user_selected_category.endswith('s') and not user_selected_category.endswith('ss'): 
-                user_selected_category = user_selected_category[:-1]
+            # # Handle simple plurals (e.g., "watches" -> "watch")
+            # if user_selected_category.endswith('es'): 
+            #     user_selected_category = user_selected_category[:-2]
+            # elif user_selected_category.endswith('s') and not user_selected_category.endswith('ss'): 
+            #     user_selected_category = user_selected_category[:-1]
 
         query_pil = _ensure_pil(query_input)
         if query_pil is None:
@@ -421,6 +421,7 @@ class HybridFashionSearch:
         query_clip = self.clip.get_image_embedding(query_pil)
         query_visual = self.visual.extract_features(query_pil)
         pred_category, conf = self.clip.predict_category(query_pil)
+        logger.info(f"Predicted Category: '{pred_category}' with confidence: {conf:.4f}")
         pred_color, _ = self.clip.predict_color(query_pil)
 
         # Handle failed feature extraction
@@ -433,6 +434,7 @@ class HybridFashionSearch:
 
         # === 4. Category Availability Check ===
         if use_category not in self.faiss_indices:
+            logger.info(f"Category not in self.faiss_indices: {use_category}")
             # Scenario A: User manually asked for category not in inventory.
             if user_selected_category:
                 logger.warning(f"User requested '{user_selected_category}' but it is not in inventory.")
@@ -442,16 +444,20 @@ class HybridFashionSearch:
             # ACTION: Fallback to Smart Search over entire inventory (Better UX).
             if category_filter:
                 # === GENIUS CODER FIX 1 (Replacement) ===
+                logger.info(f"Performing smart fallback search for category '{use_category}'...")
                 fallback_results = self._get_smart_fallback(query_clip, top_k, pred_color)
                 
                 if fallback_results:
+                     logger.info(f"Smart fallback search returned {len(fallback_results)} results for category '{use_category}'")
                      return fallback_results, f"Category '{use_category}' not in stock. Showing smart fallback items."
                 else:
+                     logger.warning(f"Smart fallback search returned no results for category '{use_category}'")
                      return [], f"Category '{use_category}' not in stock. No items found for fallback."
                 # === END GENIUS CODER FIX 1 ===
 
         # === 5. Perform FAISS Search ===
         if use_category in self.faiss_indices:
+            logger.info(f"Performing FAISS search for '{use_category}'...")
             index = self.faiss_indices[use_category]
             map_list = self.inventory_data[use_category + "_faiss_map"]
 
@@ -624,23 +630,6 @@ class HybridFashionSearch:
         
         return final_matches
         # === END GENIUS CODER FIX ===
-    # def _get_random_fallback(self, top_k, color):
-    #     all_items = [k for k in self.inventory_data.keys() if not k.endswith("_faiss_map")]
-    #     if not all_items: return []
-    #     random_items = random.sample(all_items, min(top_k, len(all_items)))
-    #     results = []
-    #     for f in random_items:
-    #         item = self.inventory_data[f]
-    #         results.append({
-    #             "filename": f,
-    #             "product_image": f,
-    #             "score": 0.0,
-    #             "similarity_score": 0.0,
-    #             "category": item.get("category", "unknown"),
-    #             "reason": "fallback",
-    #             "predicted_color": color,
-    #         })
-    #     return results
 
 
 # ==================== Public API (V3 Compatible) ====================
@@ -704,36 +693,40 @@ def search_similar_products(
             if not status_message or "Found in" in status_message: 
                 status_message = f"No products found in the category: '{user_category}'."
         # === END GENIUS CODER: Robust Logic Check ===
-        
+        logger.info(f"retuning here")
         return {
             "status": final_status, # Use the determined status
             "category_used": user_category,
             "results": results,
             "message": status_message # Use the determined message
         }
-
+        
+    logger.info(f"didnt retuning here")
     # 2. If no user category, try Auto-Detect (Smart Mode)
     img_pil = _ensure_pil(query_img)
     
     # Now this will work because idx.clip is no longer None
-    predicted_cat, conf = idx.clip.predict_category(img_pil, threshold=0.01)
-    
+    predicted_cat, conf = idx.clip.predict_category(img_pil, threshold=0.018)
+    logger.info(f"AI Predicted Category: {predicted_cat} with confidence: {conf}")
     # 3. CHECK THRESHOLD: If AI is confused ("unknown")
     if predicted_cat == "unknown":
         # We perform a "fallback" search (random or broad) BUT we warn the user
+        logger.warning("(predicted unknown)AI is confused. Performing fallback search...")
         results, status = idx.search(query_img, top_k=top_k, user_selected_category=None, category_filter=False)
         
         return {
             "status": "needs_confirmation", 
             "category_used": "unknown",
             "confidence": conf,
-            "message": "Fetched relevant products, hopefully!",
+            "message": "We are unsure, but we have fetched some products which you would like, hopefully!",
             "results": results, 
             "prompt_user": True 
         }
 
+    logger.info(f"(predicted {predicted_cat})AI not confident. Proceeding with category-filtered search.")
     # 4. Standard Success Case (High Confidence)
     results, status = idx.search(query_img, top_k=top_k, user_selected_category=predicted_cat, category_filter=True)
+    logger.info(f"Search completed with status: {status}")
     return {
         "status": "success",
         "category_used": predicted_cat,
