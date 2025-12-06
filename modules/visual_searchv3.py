@@ -183,7 +183,7 @@ class CLIPMatcher:
     #     predicted_label = labels_map[top_idx]
     #     print(f"Predicted category: {predicted_label}")
     #     return predicted_label, float(probs[top_idx])
-    def predict_category(self, img_input, threshold: float = 0.11) -> Tuple[str, float]:
+    def predict_category(self, img_input, threshold: float = 0.02) -> Tuple[str, float]:
         """
         Smart prediction with Confidence Thresholding.
         Returns ('unknown', conf) if below threshold.
@@ -491,8 +491,43 @@ class HybridFashionSearch:
 
             # Sort by fused score
             results.sort(key=lambda x: x["score"], reverse=True)
+
+            # === GENIUS CODER FIX: Deduplicate Augmented Results ===
+            final_matches = []
+            seen_source_files = set()
+            
+            for match in results:
+                # 1. Look up the original filename (e.g., '11766.jpg')
+                #    We retrieve the source_file from the inventory data using the indexed filename (fname)
+                indexed_fname = match['filename']
+                source_file = self.inventory_data.get(indexed_fname, {}).get("source_file")
+                
+                # Fallback check (shouldn't happen if indexing is correct, but good for safety)
+                if not source_file:
+                    source_file = indexed_fname
+
+                # 2. If this product hasn't been seen, add it
+                if source_file not in seen_source_files:
+                    seen_source_files.add(source_file)
+                    
+                    # Ensure the final match structure uses the original source image 
+                    # for the product_image key, so the frontend loads the correct, 
+                    # non-augmented image URL.
+                    match['product_image'] = source_file
+                    match['filename'] = source_file # Ensure filename is also the original
+                    
+                    final_matches.append(match)
+                
+                # 3. Stop once we have reached the desired top_k
+                if len(final_matches) >= top_k:
+                    break
+            
             status = f"Found in {use_category}"
-            return results[:top_k], status
+            return final_matches, status
+            # === END GENIUS CODER FIX ===
+
+            # status = f"Found in {use_category}"
+            # return results[:top_k], status
             
         else:
             # Catch-all fallback (This line is generally defensive and should be hit less often than 4.B)
@@ -562,7 +597,33 @@ class HybridFashionSearch:
                     })
             
         results.sort(key=lambda x: x["score"], reverse=True)
-        return results[:top_k]
+        # return results[:top_k]
+        # === GENIUS CODER FIX: Deduplicate Augmented Results in Fallback ===
+        final_matches = []
+        seen_source_files = set()
+        
+        for match in results:
+            indexed_fname = match['filename']
+            source_file = self.inventory_data.get(indexed_fname, {}).get("source_file")
+            
+            if not source_file:
+                source_file = indexed_fname
+
+            if source_file not in seen_source_files:
+                seen_source_files.add(source_file)
+                
+                # Ensure the product image URL points to the non-augmented source file
+                match['product_image'] = source_file
+                match['filename'] = source_file 
+                
+                final_matches.append(match)
+            
+            # Stop once we have reached the desired top_k
+            if len(final_matches) >= top_k:
+                break
+        
+        return final_matches
+        # === END GENIUS CODER FIX ===
     # def _get_random_fallback(self, top_k, color):
     #     all_items = [k for k in self.inventory_data.keys() if not k.endswith("_faiss_map")]
     #     if not all_items: return []
@@ -655,7 +716,7 @@ def search_similar_products(
     img_pil = _ensure_pil(query_img)
     
     # Now this will work because idx.clip is no longer None
-    predicted_cat, conf = idx.clip.predict_category(img_pil, threshold=0.11)
+    predicted_cat, conf = idx.clip.predict_category(img_pil, threshold=0.01)
     
     # 3. CHECK THRESHOLD: If AI is confused ("unknown")
     if predicted_cat == "unknown":
