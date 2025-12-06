@@ -225,7 +225,7 @@ const [visualWeight, setVisualWeight] = useState(0.6); // New state for Visual w
 
         {/* --- RESULTS SECTION --- */}
         {results && !isProcessing && !showConfirmModal && (
-            <div className="space-y-3">
+            <div className="space-y-4">
                 {/* SUCCESS MESSAGE (e.g. Found in Dress) */}
                 {results.length > 0 && searchMessage && (
                     <div className="p-3 bg-green-500/10 border border-green-500/20 text-green-600 rounded-lg mb-4 text-sm font-medium flex items-center gap-2">
@@ -235,9 +235,9 @@ const [visualWeight, setVisualWeight] = useState(0.6); // New state for Visual w
                 )}
 
                 {results.map((product, idx) => (
-                    <div key={idx} className="p-4 border border-border rounded-lg flex items-center gap-4 hover:border-primary/50 transition-colors">
+                    <div key={idx} className="p-5 border border-border rounded-lg flex items-center gap-6 hover:border-primary/50 transition-colors">
                         {product.product_image_url && (
-                             <img src={getImageUrl(product.product_image_url)} alt="product" className="w-16 h-16 object-cover rounded-md bg-secondary" />
+                             <img src={getImageUrl(product.product_image_url)} alt="product" className="w-28 h-28 object-cover rounded-md bg-secondary" />
                         )}
                         <div>
                             <p className="font-bold">{product.product_image}</p>
