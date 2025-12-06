@@ -666,7 +666,7 @@ def search_similar_products(
             "status": "needs_confirmation", 
             "category_used": "unknown",
             "confidence": conf,
-            "message": "Couldn't find relevant products.Confidence too low.",
+            "message": "Fetched relevant products, hopefully!",
             "results": results, 
             "prompt_user": True 
         }
