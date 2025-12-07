@@ -114,7 +114,7 @@ def re_extract_transaction_id(full_text, original_tid):
 def fix_tid_ocr_errors(raw_tid):
     allowed = "0123456789abcdef"
     tid = raw_tid.lower()
-    logging.info(f"Original TxID OCR: {tid}")
+    # logging.info(f"Original TxID OCR: {tid}")
     corrections = {
         'o': '0',
         'l': '1',
@@ -137,7 +137,7 @@ def fix_tid_ocr_errors(raw_tid):
             fixed += corrections[ch]
         else:
             fixed += "0"   # last fallback: replace junk
-    logging.info(f"Original TxID OCR:{fixed}")
+    # logging.info(f"Original TxID OCR:{fixed}")
     return fixed[:24]
 
 def extract_fields(text):
@@ -510,6 +510,7 @@ def fetch_email(transaction_id, timestamp):
         def extract_parts(payload):
             """Recursively extract all text from payload parts"""
             text = ""
+            email_timestamp = None
             if "parts" in payload:
                 for idx, part in enumerate(payload["parts"]):
                     mime_type = part.get("mimeType", "")
@@ -521,13 +522,25 @@ def fetch_email(transaction_id, timestamp):
                             text += decoded + "\n"
                         elif mime_type == "text/html" and part.get("body", {}).get("data"):
                             html = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8")
-                            from bs4 import BeautifulSoup
+                            # --- Extract timestamp BEFORE cleaning ---
+                            timestamp_regex_html = r'\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4},\s+\d{1,2}:\d{2}\s*(AM|PM)'
+                            html_match = re.search(timestamp_regex_html, html)
+                            if html_match:
+                                raw_ts = html_match.group(0)
+                                try:
+                                    email_timestamp = datetime.datetime.strptime(raw_ts, "%d %b %Y, %I:%M %p")
+                                except:
+                                    email_timestamp = datetime.datetime.strptime(raw_ts, "%d %B %Y, %I:%M %p")
+
+                            # --- Clean HTML for text extraction ---
                             soup = BeautifulSoup(html, "html.parser")
                             text += soup.get_text(separator=" ", strip=True) + "\n"
                             logging.info("Text/html part decoded and converted to plain text successfully.")
                         elif "parts" in part:
-                            # Recursive call
-                            text += extract_parts(part)
+                            nested_text, nested_ts = extract_parts(part)
+                            text += nested_text
+                            if nested_ts:
+                                email_timestamp = nested_ts
                     except Exception as e:
                         logging.warning(f"Failed to decode part {idx + 1} ({mime_type}): {e}")
             else:
@@ -535,7 +548,7 @@ def fetch_email(transaction_id, timestamp):
                     decoded = base64.urlsafe_b64decode(payload["body"]["data"]).decode("utf-8")
                     text += decoded + "\n"
                     logging.info("Single-part payload decoded successfully.")
-            return text
+            return text, email_timestamp
 
         for i, msg in enumerate(messages):
             logging.info(f"Processing message {i + 1}/{len(messages)}: ID={msg['id']}")
@@ -545,7 +558,7 @@ def fetch_email(transaction_id, timestamp):
 
             snippet = msg_data.get("snippet", "")
             payload = msg_data.get("payload", {})
-            body_text = extract_parts(payload)
+            body_text, email_ts= extract_parts(payload)
             full_text = snippet + "\n" + body_text
 
             # logging.info(f"Full email text length: {len(full_text)}")
@@ -554,7 +567,7 @@ def fetch_email(transaction_id, timestamp):
             # Extract TxID, Amount, Timestamp
             tid_match = re.search(r"Transaction\s*(?:ID|1D)[^\w\d]*([\w\d]{20,})", full_text, re.IGNORECASE)
             amt_match = re.search(r"Rs[\.\s]*([\d,]+)", full_text, re.IGNORECASE)
-            ts_match  = re.search(r"(\d{1,2}\s+\w+\s+\d{4},\s+\d{1,2}:\d{2}\s*(AM|PM))", full_text)
+            # ts_match  = re.search(r"(\d{1,2}\s+\w+\s+\d{4},\s+\d{1,2}:\d{2}\s*(AM|PM))", full_text)
 
             if tid_match:
                 extracted_tid = tid_match.group(1)
@@ -571,26 +584,11 @@ def fetch_email(transaction_id, timestamp):
                 continue
             logging.info(f"Evaluating similarity: {similarity} vs threshold {TXID_FUZZY_THRESHOLD}")
             if similarity >= TXID_FUZZY_THRESHOLD:
-                email_ts = None
-                if ts_match:
-                    try:
-                        raw_ts = ts_match.group(1)
-                        day = raw_ts[0:2]
-                        month = raw_ts[2:5]
-                        year = raw_ts[5:9]
-                        hour = raw_ts[9:11]
-                        minute = raw_ts[11:13]
-                        ampm = raw_ts[13:]
-                        email_ts = datetime.datetime.strptime(f"{day} {month} {year} {hour}:{minute} {ampm}", "%d %b %Y %I:%M %p")
-                        logging.info(f"Parsed email timestamp: {email_ts}")
-                    except Exception as e:
-                        logging.warning(f"Failed to parse email timestamp: {e}")
-
                 logging.info(f"Matching email found: TxID={extracted_tid}, Amount={amt_match.group(1)}, Timestamp={email_ts}")
                 return {
                     "transaction_id": extracted_tid,
                     "amount": int(amt_match.group(1).replace(",", "")),
-                    "timestamp": email_ts
+                    "timestamp": email_ts  # Comes from raw HTML
                 }
 
         logging.info("No matching email found in the given timeframe.")
@@ -608,6 +606,30 @@ def detect_fraud(image_bytes):
     return False
 
 def calculate_confidence(extracted, chat_amount, email_data, is_fraud, extraction_score):
+    """
+    Calculate confidence score for a given extracted data from receipt image.
+
+    Confidence score is calculated based on the following factors:
+
+    1. Amount: If the amount from the image matches the chat amount, add 40. If the amount is similar (fuzz ratio > 90), add 20.
+    2. Tx ID: If the Tx ID from the image matches the Tx ID from the email, add 30.
+    3. Timestamp: If the timestamp from the image matches the timestamp from the email (within 5 minutes), add 20. If the timestamp is within the TIMESTAMP_DELTA, add 10.
+    4. Receiver: If the receiver name from the image matches the merchant account name, add 10.
+    If the email data is not provided, subtract 20 from the score.
+    The final confidence score is capped at 100.
+    Returns a tuple of (confidence_score, status) where status can be one of the following:
+
+    APPROved: Confidence score >= CONFIDENCE_THRESHOLD_APPROVE
+    manual_review: Confidence score >= CONFIDENCE_THRESHOLD_REVIEW
+    rejected: Confidence score < CONFIDENCE_THRESHOLD_REVIEW
+
+    :param extracted: Extracted data from receipt image
+    :param chat_amount: Amount from chat
+    :param email_data: Email data
+    :param is_fraud: Whether the email is suspected to be fraudulent
+    :param extraction_score: Extraction score from OCR
+    :return: Tuple of (confidence_score, status)
+    """
     score = extraction_score
     if is_fraud:
         return 0, "Fraud detected"
@@ -652,18 +674,6 @@ def verify_payment():
     try:
         image_file = request.files["image"]
         chat_file = request.files["chat_file"]
-        # gmail_token = request.form["gmail_token"]
-        # gmail_token = request.form.get("gmail_token")  # Just the raw token string
-        # if gmail_token:
-        #     creds = Credentials(
-        #         token=gmail_token,
-        #         refresh_token=None,
-        #         token_uri="https://oauth2.googleapis.com/token",
-        #         client_id=None,
-        #         client_secret=None
-        #     )
-        # else:
-        #     creds = None  # Skip Gmail verification
 
         image_bytes = image_file.read()
         chat_text = chat_file.read().decode("utf-8")
