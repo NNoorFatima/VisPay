@@ -215,6 +215,7 @@ from flask import Flask, request, jsonify
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 
+
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
@@ -228,14 +229,16 @@ TIMESTAMP_DELTA = datetime.timedelta(minutes=45)
 WIDER_DELTA = datetime.timedelta(hours=1)
 CONFIDENCE_THRESHOLD_APPROVE = 90
 CONFIDENCE_THRESHOLD_REVIEW = 50  # Lowered for more leniency
+TXID_FUZZY_THRESHOLD = 80  # % similarity to consider as match
+WIDER_DELTA = datetime.timedelta(hours=1)
+# with open("cred.json") as f:
+#     oauth_creds = json.load(f)
 
-with open("cred.json") as f:
-    oauth_creds = json.load(f)
+# CLIENT_ID = oauth_creds["client_id"]
+# CLIENT_SECRET = oauth_creds["client_secret"]
+# REFRESH_TOKEN = oauth_creds["refresh_token"]
+# TOKEN_URI = oauth_creds.get("token_uri", "https://oauth2.googleapis.com/token")
 
-CLIENT_ID = oauth_creds["client_id"]
-CLIENT_SECRET = oauth_creds["client_secret"]
-REFRESH_TOKEN = oauth_creds["refresh_token"]
-TOKEN_URI = oauth_creds.get("token_uri", "https://oauth2.googleapis.com/token")
 # ROBUST REGEX (handles OCR junk like "1D" instead of "ID", missing spaces)
 PATTERNS = {
     "amount": r"Rs[\.\s]*([\d,]+)",  
@@ -415,17 +418,25 @@ def parse_chat_amount(chat_text):
     return None
 
 def get_access_token():
-    """Get a new access token from the refresh token"""
+    """
+    Reads credentials.json and returns a fresh access token using refresh_token
+    """
+    with open("cred.json", "r") as f:
+        creds = json.load(f)
+
     data = {
-        "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET,
-        "refresh_token": REFRESH_TOKEN,
+        "client_id": creds["client_id"],
+        "client_secret": creds["client_secret"],
+        "refresh_token": creds["refresh_token"],
         "grant_type": "refresh_token"
     }
-    resp = requests.post(TOKEN_URI, data=data)
-    resp.raise_for_status()
-    token_data = resp.json()
-    return token_data["access_token"]
+
+    token_resp = requests.post(creds["token_uri"], data=data)
+    token_resp.raise_for_status()
+    access_token = token_resp.json()["access_token"]
+    logging.info("Access token obtained successfully.")
+    return access_token
+
 
 
 # def fetch_email(credentials_json, timestamp):
@@ -679,35 +690,42 @@ def get_access_token():
 #     except Exception as e:
 #         logging.error(f"Gmail fetch error: {e}")
 #         return None
-
-def fetch_email(timestamp):
+def fetch_email(transaction_id, timestamp):
     """
-    Fetch email from EMAIL_SENDER around the given timestamp
+    Fetch email from EMAIL_SENDER on the same day as timestamp and matching TxID
     Returns dict with transaction_id, amount, timestamp
     """
     try:
-        logging.info("Starting Gmail fetch process...")
+        logging.info("---- Starting Gmail fetch process ----")
         access_token = get_access_token()
-        logging.info("Access token obtained successfully.")
-
         creds = Credentials(token=access_token)
         service = build("gmail", "v1", credentials=creds)
         logging.info("Gmail service initialized.")
 
-        start = (timestamp - TIMESTAMP_DELTA).strftime("%Y/%m/%d")
-        end = (timestamp + TIMESTAMP_DELTA).strftime("%Y/%m/%d")
-        query = f"from:{EMAIL_SENDER} after:{start} before:{end}"
+        # Search using the exact day
+        day_str = timestamp.strftime("%Y/%m/%d")
+        #a1
+        # query = f"from:{EMAIL_SENDER} after:{day_str} before:{day_str}"
+        #a2
+        # start = (timestamp - WIDER_DELTA).strftime("%Y/%m/%d")
+        # end   = (timestamp + WIDER_DELTA).strftime("%Y/%m/%d")
+        # query = f"from:{EMAIL_SENDER} after:{start} before:{end}"
+        #a3
+        day_start = timestamp.strftime("%Y/%m/%d")
+        day_end = (timestamp + datetime.timedelta(days=1)).strftime("%Y/%m/%d")
+        query = f"from:{EMAIL_SENDER} after:{day_start} before:{day_end}"
+
+
         logging.info(f"Gmail search query: {query}")
 
         results = service.users().messages().list(userId="me", q=query).execute()
         messages = results.get("messages", [])
-        logging.info(f"Messages found: {len(messages)}")
+        logging.info(f"Total messages found: {len(messages)}")
 
-        for msg in messages:
-            msg_id = msg.get("id")
-            logging.info(f"Fetching message ID: {msg_id}")
+        for i, msg in enumerate(messages):
+            logging.info(f"Processing message {i + 1}/{len(messages)}: ID={msg['id']}")
             msg_data = service.users().messages().get(
-                userId="me", id=msg_id, format="full"
+                userId="me", id=msg["id"], format="full"
             ).execute()
 
             snippet = msg_data.get("snippet", "")
@@ -715,24 +733,55 @@ def fetch_email(timestamp):
             body = ""
 
             if "parts" in payload:
-                for part in payload["parts"]:
-                    if part.get("mimeType") == "text/plain":
-                        import base64
-                        try:
+                for j, part in enumerate(payload["parts"]):
+                    mime_type = part.get("mimeType")
+                    logging.info(f"Checking part {j + 1}: mimeType={mime_type}")
+
+                    try:
+                        if mime_type == "text/plain" and part.get("body", {}).get("data"):
                             body = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8")
-                            logging.info("Email body decoded successfully.")
-                        except Exception as e:
-                            logging.warning(f"Failed to decode email body: {e}")
-                        break
+                            logging.info("Text/plain part decoded successfully.")
+                            break
+
+                        elif mime_type == "text/html" and part.get("body", {}).get("data"):
+                            html_content = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8")
+                            from bs4 import BeautifulSoup
+                            soup = BeautifulSoup(html_content, "html.parser")
+                            body = soup.get_text(separator=" ", strip=True)
+                            logging.info("Text/html part decoded and converted to plain text successfully.")
+                            break
+
+                    except Exception as e:
+                        logging.warning(f"Failed to decode part {j + 1} ({mime_type}): {e}")
+
+            else:
+                logging.info("No 'parts' found in payload; using snippet only.")
+                body = ""
 
             full_text = snippet + body
-            logging.debug(f"Full email text (truncated 200 chars): {full_text[:200]}")
+            logging.info(f"Full email text length: {len(full_text)}")
+            logging.info(f"\n\n\nFull email text content:\n{full_text}\n\n\n")
 
+            # Extract TxID, Amount, Timestamp
             tid_match = re.search(r"Transaction\s*(?:ID|1D)[^\w\d]*([\w\d]{20,})", full_text, re.IGNORECASE)
             amt_match = re.search(r"Rs[\.\s]*([\d,]+)", full_text, re.IGNORECASE)
             ts_match  = re.search(r"(\d{2}[A-Za-z]{3}\d{4}\d{4}(AM|PM))", full_text)
 
-            if tid_match and amt_match:
+            if tid_match:
+                extracted_tid = tid_match.group(1)
+                similarity = fuzz.ratio(transaction_id.lower(), extracted_tid.lower())
+                logging.info(f"TxID found: {extracted_tid} | Similarity with OCR TxID: {similarity}%")
+            else:
+                logging.info("No TxID found in this email.")
+                continue
+
+            if amt_match:
+                logging.info(f"Amount found in email: {amt_match.group(1)}")
+            else:
+                logging.info("No amount found in this email.")
+                continue
+
+            if similarity >= TXID_FUZZY_THRESHOLD:
                 email_ts = None
                 if ts_match:
                     try:
@@ -743,28 +792,24 @@ def fetch_email(timestamp):
                         hour = raw_ts[9:11]
                         minute = raw_ts[11:13]
                         ampm = raw_ts[13:]
-                        email_ts = datetime.datetime.strptime(
-                            f"{day} {month} {year} {hour}:{minute} {ampm}",
-                            "%d %b %Y %I:%M %p"
-                        )
-                        logging.info(f"Email timestamp parsed: {email_ts}")
+                        email_ts = datetime.datetime.strptime(f"{day} {month} {year} {hour}:{minute} {ampm}", "%d %b %Y %I:%M %p")
+                        logging.info(f"Parsed email timestamp: {email_ts}")
                     except Exception as e:
                         logging.warning(f"Failed to parse email timestamp: {e}")
 
-                logging.info(f"Transaction matched. TID: {tid_match.group(1)}, Amount: {amt_match.group(1)}")
+                logging.info(f"Matching email found: TxID={extracted_tid}, Amount={amt_match.group(1)}, Timestamp={email_ts}")
                 return {
-                    "transaction_id": tid_match.group(1),
+                    "transaction_id": extracted_tid,
                     "amount": int(amt_match.group(1).replace(",", "")),
                     "timestamp": email_ts
                 }
 
         logging.info("No matching email found in the given timeframe.")
         return None
-
     except Exception as e:
-        logging.error(f"Gmail fetch error: {e}", exc_info=True)
+        logging.error(f"Gmail fetch error: {e}")
         return None
-
+    
 def detect_fraud(image_bytes):
     # Simple check (expand as needed)
     img = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
@@ -847,11 +892,12 @@ def verify_payment():
             return jsonify({"error": "Could not determine order amount from chat"}), 400
 
         ts = extracted.get("timestamp")
+        tid= extracted.get("transaction_id")
         if not ts:
             return jsonify({"error": "No timestamp extracted - cannot verify email"}), 400
         #fetching mail
         # email_data = fetch_email(gmail_token, ts)
-        email_data = fetch_email(ts)
+        email_data = fetch_email(tid, ts)
 
         is_fraud = detect_fraud(image_bytes)
 
