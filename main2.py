@@ -199,6 +199,22 @@ def extract_fields(text):
     return data, score
 
 def parse_chat_amount(chat_text):
+    """
+    Parse the chat text and return the amount mentioned in it.
+
+    Parameters:
+    chat_text (str): The text to parse.
+
+    Returns:
+    int: The extracted amount, or None if no amount was found.
+
+    The supported patterns are:
+    - "final <amount>"
+    - "total <amount>"
+    - "<amount> kr"
+    - "ban[ae]ga <amount>"
+    - "<amount> rupees?"
+    """
     text = chat_text.lower()
     patterns = [
         r"final[^\d]*([\d,]+)",
@@ -233,259 +249,6 @@ def get_access_token():
     logging.info("Access token obtained successfully.")
     return access_token
 
-
-
-# def fetch_email(credentials_json, timestamp):
-#     try:
-#         logger.info("---- FETCH EMAIL START ----")
-#         logger.info("[1] Loading Gmail credentials...")
-#         creds = Credentials.from_authorized_user_info(json.loads(credentials_json))
-#         logger.info("[1] Credentials loaded successfully.")
-#         service = build("gmail", "v1", credentials=creds)
-#         logger.info("[2] Gmail service initialized.")
-
-#         start = (timestamp - TIMESTAMP_DELTA).strftime("%Y/%m/%d")
-#         end = (timestamp + TIMESTAMP_DELTA).strftime("%Y/%m/%d")
-#         query = f"from:{EMAIL_SENDER} after:{start} before:{end}"
-#         logger.info(f"[3] Gmail query prepared: {query}")
-
-#         logger.info("[4] Fetching list of messages...")
-#         results = service.users().messages().list(userId="me", q=query).execute()
-#         messages = results.get("messages", [])
-#         logger.info(f"[4] Messages found: {len(messages)}")
-
-        
-#         for msg in messages:
-#             msg_data = service.users().messages().get(userId="me", id=msg["id"], format="full").execute()
-#             logger.info(f"[5] Fetching email content for ID: {msg_id}")
-#             # Parse body (base64 decode if needed, but snippet often suffices)
-#             snippet = msg_data["snippet"]
-#             payload = msg_data["payload"]
-#             body = ""
-#             logger.info("[6] Checking payload for text/plain parts...")
-#             if "parts" in payload:
-#                 for part in payload["parts"]:
-#                     if part["mimeType"] == "text/plain":
-#                         logger.info("[6] Found text/plain part. Decoding...")
-#                         body = part["body"]["data"]  # Base64 decode if needed
-#                         import base64
-#                         body = base64.urlsafe_b64decode(body).decode("utf-8")
-#                         logger.info("[6] Base64 decoding successful.")
-#                         break
-#                     else:
-#                         logger.info("[6] No parts found in payload (possibly simple text email).")
-#             full_text = snippet + body
-#             logger.info("[7] Extracting fields from email text...")
-#             tid_match = re.search(PATTERNS["transaction_id"], full_text, re.IGNORECASE)
-#             amt_match = re.search(PATTERNS["amount"], full_text, re.IGNORECASE)
-#             ts_match = re.search(PATTERNS["timestamp"], full_text)
-#             logger.info(f"[7] Regex results: TID={bool(tid_match)}, AMT={bool(amt_match)}, TS={bool(ts_match)}")
-
-#             if tid_match and amt_match:
-#                 logger.info("[8] Matching email found. Extracting values...")
-#                 email_ts_str = ts_match.group(1).strip() if ts_match else ""
-#                 email_ts = datetime.datetime.strptime(email_ts_str, "%d %b %Y, %I:%M %p") if email_ts_str else None
-#                 return {
-#                     "transaction_id": tid_match.group(1),
-#                     "amount": int(amt_match.group(1).replace(",", "")),
-#                     "timestamp": email_ts
-#                 }
-#         # Fallback wider search
-#         start_wide = (timestamp - WIDER_DELTA).strftime("%Y/%m/%d")
-#         end_wide = (timestamp + WIDER_DELTA).strftime("%Y/%m/%d")
-#         query_wide = f"from:{EMAIL_SENDER} after:{start_wide} before:{end_wide}"
-#         # Repeat search logic...
-#         # (Omit repetition for brevity; implement similarly)
-#         return None
-#     except Exception as e:
-#         logging.error(f"Gmail error: {e}")
-#         return None
-#----------------------------------------------------------------------------------------------------
-#----------------------------------------------------------------------------------------------------
-#----------------------------------------------------------------------------------------------------
-# def fetch_email(token, timestamp):
-#     try:
-#         logger.info("---- FETCH EMAIL START ----")
-
-#         logger.info("[1] Creating credentials using token only...")
-#         creds = Credentials(token=token)
-#         logger.info("[1] Credentials created successfully.")
-
-#         service = build("gmail", "v1", credentials=creds)
-#         logger.info("[2] Gmail service initialized.")
-
-#         start = (timestamp - TIMESTAMP_DELTA).strftime("%Y/%m/%d")
-#         end = (timestamp + TIMESTAMP_DELTA).strftime("%Y/%m/%d")
-#         query = f"from:{EMAIL_SENDER} after:{start} before:{end}"
-#         logger.info(f"[3] Gmail query prepared: {query}")
-
-#         results = service.users().messages().list(userId="me", q=query).execute()
-#         messages = results.get("messages", [])
-#         logger.info(f"[4] Messages found: {len(messages)}")
-
-#         for msg in messages:
-#             msg_data = service.users().messages().get(userId="me", id=msg["id"], format="full").execute()
-#             snippet = msg_data.get("snippet", "")
-#             payload = msg_data.get("payload", {})
-#             body = ""
-
-#             if "parts" in payload:
-#                 for part in payload["parts"]:
-#                     if part.get("mimeType") == "text/plain":
-#                         import base64
-#                         body = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8")
-#                         break
-
-#             full_text = snippet + body
-
-#             tid_match = re.search(PATTERNS["transaction_id"], full_text, re.IGNORECASE)
-#             amt_match = re.search(PATTERNS["amount"], full_text, re.IGNORECASE)
-#             ts_match  = re.search(PATTERNS["timestamp"], full_text)
-
-#             if tid_match and amt_match:
-#                 email_ts = None
-#                 if ts_match:
-#                     try:
-#                         email_ts = datetime.datetime.strptime(ts_match.group(1), "%d %b %Y, %I:%M %p")
-#                     except:
-#                         pass
-
-#                 return {
-#                     "transaction_id": tid_match.group(1),
-#                     "amount": int(amt_match.group(1).replace(",", "")),
-#                     "timestamp": email_ts
-#                 }
-
-#         return None
-#     except Exception as e:
-#         logger.error(f"Gmail error: {e}")
-#         return None
-#----------------------------------------------------------------------------------------------------
-#----------------------------------------------------------------------------------------------------
-
-# def fetch_email_from_json(timestamp):
-#     """
-#     Fetch Gmail content using the OAuth client credentials JSON (single account)
-#     """
-#     try:
-#         # Load OAuth credentials from JSON (contains access + refresh token)
-#         creds = Credentials.from_authorized_user_file("cred.json", SCOPES)
-
-#         service = build("gmail", "v1", credentials=creds)
-
-#         # Gmail query
-#         start = (timestamp - TIMESTAMP_DELTA).strftime("%Y/%m/%d")
-#         end   = (timestamp + TIMESTAMP_DELTA).strftime("%Y/%m/%d")
-#         query = f"from:{EMAIL_SENDER} after:{start} before:{end}"
-#         logging.info(f"Gmail query: {query}")
-
-#         results = service.users().messages().list(userId="me", q=query).execute()
-#         messages = results.get("messages", [])
-
-#         for msg in messages:
-#             msg_data = service.users().messages().get(userId="me", id=msg["id"], format="full").execute()
-#             snippet = msg_data.get("snippet", "")
-#             payload = msg_data.get("payload", {})
-#             body = ""
-
-#             if "parts" in payload:
-#                 for part in payload["parts"]:
-#                     if part.get("mimeType") == "text/plain":
-#                         import base64
-#                         body = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8")
-#                         break
-
-#             full_text = snippet + body
-
-#             tid_match = re.search(PATTERNS["transaction_id"], full_text, re.IGNORECASE)
-#             amt_match = re.search(PATTERNS["amount"], full_text, re.IGNORECASE)
-#             ts_match  = re.search(PATTERNS["timestamp"], full_text)
-
-#             if tid_match and amt_match:
-#                 email_ts = None
-#                 if ts_match:
-#                     try:
-#                         email_ts = datetime.datetime.strptime(ts_match.group(1), "%d %b %Y, %I:%M %p")
-#                     except:
-#                         pass
-
-#                 return {
-#                     "transaction_id": tid_match.group(1),
-#                     "amount": int(amt_match.group(1).replace(",", "")),
-#                     "timestamp": email_ts
-#                 }
-
-#         return None
-
-#     except Exception as e:
-#         logging.error(f"Gmail fetch error: {e}")
-#         return None
-
-# def fetch_email(timestamp):
-#     """
-#     Fetch email from EMAIL_SENDER around the given timestamp
-#     Returns dict with transaction_id, amount, timestamp
-#     """
-#     try:
-#         access_token = get_access_token()
-#         creds = Credentials(token=access_token)
-#         service = build("gmail", "v1", credentials=creds)
-
-#         start = (timestamp - TIMESTAMP_DELTA).strftime("%Y/%m/%d")
-#         end = (timestamp + TIMESTAMP_DELTA).strftime("%Y/%m/%d")
-#         query = f"from:{EMAIL_SENDER} after:{start} before:{end}"
-
-#         results = service.users().messages().list(userId="me", q=query).execute()
-#         messages = results.get("messages", [])
-
-#         for msg in messages:
-#             msg_data = service.users().messages().get(
-#                 userId="me", id=msg["id"], format="full"
-#             ).execute()
-
-#             snippet = msg_data.get("snippet", "")
-#             payload = msg_data.get("payload", {})
-#             body = ""
-
-#             if "parts" in payload:
-#                 for part in payload["parts"]:
-#                     if part.get("mimeType") == "text/plain":
-#                         import base64
-#                         body = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8")
-#                         break
-
-#             full_text = snippet + body
-
-#             tid_match = re.search(r"Transaction\s*(?:ID|1D)[^\w\d]*([\w\d]{20,})", full_text, re.IGNORECASE)
-#             amt_match = re.search(r"Rs[\.\s]*([\d,]+)", full_text, re.IGNORECASE)
-#             ts_match  = re.search(r"(\d{2}[A-Za-z]{3}\d{4}\d{4}(AM|PM))", full_text)
-
-#             if tid_match and amt_match:
-#                 email_ts = None
-#                 if ts_match:
-#                     try:
-#                         raw_ts = ts_match.group(1)
-#                         day = raw_ts[0:2]
-#                         month = raw_ts[2:5]
-#                         year = raw_ts[5:9]
-#                         hour = raw_ts[9:11]
-#                         minute = raw_ts[11:13]
-#                         ampm = raw_ts[13:]
-#                         email_ts = datetime.datetime.strptime(f"{day} {month} {year} {hour}:{minute} {ampm}", "%d %b %Y %I:%M %p")
-#                     except Exception as e:
-#                         logging.warning(f"Failed to parse email timestamp: {e}")
-
-#                 return {
-#                     "transaction_id": tid_match.group(1),
-#                     "amount": int(amt_match.group(1).replace(",", "")),
-#                     "timestamp": email_ts
-#                 }
-
-#         return None
-
-#     except Exception as e:
-#         logging.error(f"Gmail fetch error: {e}")
-#         return None
 def fetch_email(transaction_id, timestamp):
     """
     Fetch email from EMAIL_SENDER on the same day as timestamp and matching TxID
@@ -599,6 +362,16 @@ def fetch_email(transaction_id, timestamp):
 
 def detect_fraud(image_bytes):
     # Simple check (expand as needed)
+    """
+    Detects whether an image has been edited or tampered with.
+
+    Currently, this function uses the Canny edge detection algorithm to detect
+    high edges in the image, which may be indicative of image editing or
+    tampering.
+
+    :param image_bytes: The image to be analyzed
+    :return: True if the image has been edited or tampered with, False otherwise
+    """
     img = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
     edges = cv2.Canny(img, 100, 200)
     if np.mean(edges) > 200:  # High edges = possible edit
