@@ -40,11 +40,12 @@ WIDER_DELTA = datetime.timedelta(hours=1)
 
 # ROBUST REGEX (handles OCR junk like "1D" instead of "ID", missing spaces)
 PATTERNS = {
-    "amount": r"Rs[\.\s]*([\d,]+)",  
-    "transaction_id": r"Transaction\s*(?:ID|1D)[^\w\d]*([\w\d]{20,})",  # Handles "Transaction1D"
+    "amount": r"(?:Rs|RS|Rs\.?|Rs?|rs|rs\.?|rs?)[\.\s]*([\d,]+)",  # Handles "rs" instead of "Rs"
+    "transaction_id": r"(?:Transaction|Tranction|Transation|Trnsaction|Tranzaction)(?:ID|1D)[^\w\d]*([\w\d]{20,})",  # Handles "Transaction1D", "Tranction1D", "Transation1D", "Trnsaction1D"
     # "timestamp": r"(\d{1,2}\s*[A-Za-z]{3}\s*\d{4}\s*,\s*\d{1,2}:\d{2}\s*[AP]M)",  # Flexible spacing
     "timestamp":r"(\d{2}[A-Za-z]{3}\d{4}\d{4}(AM|PM))",
-    "receiver": r"Destination\s+Acc?\.?\s*Title\s*(.+?)(?:\n|$)",  
+    "receiver": r"(?:Destin[a-z]*\s*A[cekg]{1,3}\s*Titl[a-z]*)(?:\s*[:\-]?\s*)([A-Za-z0-9 ._-]+)"
+    # "receiver": r"Destination\s+Acc?\.?\s*Title\s*(?:[Dd]estination\s+acc?\.?\s*title|destination\s+acc?\.?\s*title|Dest\s+Acc?\.?\s*Title|dest\s+acc?\.?\s*title)(?:\n|$)",  
 }
 
 def detect_blur(image):
@@ -53,6 +54,19 @@ def detect_blur(image):
     return variance < 100  # Threshold: <100 = blurry (adjust based on tests)
 
 def aggressive_preprocess(image_bytes):
+    """
+    Aggressively preprocess an image to improve OCR quality.
+
+    Apply a range of image preprocessing techniques to improve the quality
+    of the image, including deblurring, histogram equalization, thresholding,
+    adaptive thresholding, and mild upscaling.
+
+    If the image is too blurry or sketchy, raise a ValueError.
+
+    :param image_bytes: The image to preprocess as a bytes object
+    :return: The preprocessed image as a string
+    :raises ValueError: If the image is too blurry or sketchy
+    """
     nparr = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if img is None:
@@ -144,60 +158,103 @@ def fix_tid_ocr_errors(raw_tid):
     return fixed[:24]
 
 def extract_fields(text):
+    """
+    Extract fields from OCR text output.
+    Parameters:
+    text (str): The OCR text output
+    Returns:
+    data (dict): A dictionary containing the extracted fields
+    score (int): A confidence score indicating the quality of the extraction
+    The confidence score is calculated as follows:
+    - Amount extraction: 40
+    - Transaction ID extraction: 30
+    - Timestamp extraction: 20
+    - Receiver extraction: 10
+    The total confidence score is the sum of the scores for each field.
+    If any field extraction fails, the confidence score for that field is 0.
+    """
     data = {}
     score = 0
     text_lower = text.lower()
 
+    logging.info(f"Extracting fields from OCR text...")
+    #amount extraction
     amt_match = re.search(PATTERNS["amount"], text, re.IGNORECASE)
     if amt_match:
         data["amount"] = int(amt_match.group(1).replace(",", ""))
         score += 40
-
+    else:
+        logging.error("Amount extraction failed")
+        data["amount"] = None
+    
+    #transaction id extraction
     tid = re.search(PATTERNS["transaction_id"], text, re.IGNORECASE)
-    rw_tid= tid.group(1).strip()
-    tid_match = fix_tid_ocr_errors(rw_tid)
-
-    if tid_match:
-        # data["transaction_id"] = tid_match.group(1).strip().lower()
-        data["transaction_id"] = tid_match
-        if (len(data["transaction_id"]) == 24):
-            score += 30
-        else:
-            improved_tid = re_extract_transaction_id(text, tid_match)
-            if len(improved_tid) == 24:
-                data["transaction_id"] = improved_tid
-                score += 28  # slightly lower because corrected
+    if tid is None:
+        logging.error("Transaction ID regex failed")
+        data["transaction_id"] = None
+        # skip TID scoring
+    else:
+        rw_tid = tid.group(1).strip()
+        tid_match = fix_tid_ocr_errors(rw_tid)
+        logging.info(f"TID after OCR fix: {tid_match}")
+        if tid_match:
+            data["transaction_id"] = tid_match
+            if len(data["transaction_id"]) == 24:
+                score += 30
             else:
-                # fallback: truncate but still insert what we have
-                data["transaction_id"] = improved_tid[:24]
-                score += 25
+                improved_tid = re_extract_transaction_id(text, tid_match or "")
+                if len(improved_tid) == 24:
+                    data["transaction_id"] = improved_tid
+                    score += 28
+                else:
+                    data["transaction_id"] = improved_tid[:24]
+                    score += 25
 
+    # Timestamp extraction
     ts_match = re.search(PATTERNS["timestamp"], text)
-    if ts_match:
-        raw_ts = ts_match.group(1)
+    if not ts_match:
+        logging.error("Timestamp extraction failed")
+        data["timestamp"] = None
+    else:
+        raw_ts = ts_match.group(1).strip()
+        logging.info(f"Raw timestamp extracted: {raw_ts}")
+        # Must be at least 14 chars: DDMMMYYYYHHMMAM/PM
+        if len(raw_ts) < 14:
+            logging.error(f"Timestamp too short or malformed: {raw_ts}")
+            data["timestamp"] = None
+        else:
+            try:
+                day = raw_ts[0:2]
+                month = raw_ts[2:5]
+                year = raw_ts[5:9]
+                hour = raw_ts[9:11]
+                minute = raw_ts[11:13]
+                ampm = raw_ts[13:].upper()   # ensure "am" → "AM"
+                formatted = f"{day} {month} {year} {hour}:{minute} {ampm}"
+                print("timestamp:", formatted)
+                data["timestamp"] = datetime.datetime.strptime(
+                    formatted, "%d %b %Y %I:%M %p")
+                score += 20
+            except Exception as e:
+                logging.error(f"Timestamp parse error for '{raw_ts}' → {e}")
+                data["timestamp"] = None
 
-    # Convert "03Dec20250817AM" → "03 Dec 2025 08:17 AM"
-        try:
-            day = raw_ts[0:2]
-            month = raw_ts[2:5]
-            year = raw_ts[5:9]
-            hour = raw_ts[9:11]
-            minute = raw_ts[11:13]
-            ampm = raw_ts[13:]
-
-            formatted = f"{day} {month} {year} {hour}:{minute} {ampm}"
-            print( "timestamp:",formatted)
-            data["timestamp"] = datetime.datetime.strptime(formatted, "%d %b %Y %I:%M %p")
-
-            score += 20
-        except Exception as e:
-            logging.error(f"Timestamp parse error: {e}")
-            pass
-
+    # Receiver extraction
     rec_match = re.search(PATTERNS["receiver"], text, re.IGNORECASE)
-    if rec_match:
-        data["receiver"] = rec_match.group(1).strip().lower()
-        score += 10
+    logging.info(f"Receiver regex search result: {rec_match}")
+    if not rec_match:
+        logging.error("Receiver extraction failed")
+        data["receiver"] = None
+    else:
+        try:
+            receiver_value = rec_match.group(1).strip().lower()
+            data["receiver"] = receiver_value
+            score += 10
+        except Exception as e:
+            logging.error(f"Receiver extraction group error: {e}")
+            data["receiver"] = None
+
+    #log of all the data 
     logging.info(f"Extracted: {data} | Confidence: {score}")
     return data, score
 
@@ -332,6 +389,7 @@ def fetch_email(transaction_id, timestamp):
 
             # Extract TxID, Amount, Timestamp
             tid_match = re.search(r"Transaction\s*(?:ID|1D)[^\w\d]*([\w\d]{20,})", full_text, re.IGNORECASE)
+            logging.info(f"Searching for Transaction ID in email...")
             amt_match = re.search(r"Rs[\.\s]*([\d,]+)", full_text, re.IGNORECASE)
             # ts_match  = re.search(r"(\d{1,2}\s+\w+\s+\d{4},\s+\d{1,2}:\d{2}\s*(AM|PM))", full_text)
 
@@ -464,6 +522,7 @@ def verify_payment():
         logging.info(f"Raw OCR Text:\n{raw_text}")
 
         extracted, extraction_conf = extract_fields(raw_text)
+        logging.info(f"Extraction confidence: {extraction_conf}")
         if extraction_conf < 50:
             return jsonify({"error": "Could not read receipt clearly. Please send a clearer screenshot.", "raw_text": raw_text[:1000]}), 400
 
@@ -473,6 +532,7 @@ def verify_payment():
 
         ts = extracted.get("timestamp")
         tid= extracted.get("transaction_id")
+        rec= extracted.get("receiver")
         if not ts:
             return jsonify({"error": "No timestamp extracted - cannot verify email"}), 400
         #fetching mail
@@ -490,7 +550,7 @@ def verify_payment():
             "chat_amount": chat_amount,
             "email_data": email_data,
             "fraud_detected": is_fraud,
-            "receiver account": MERCHANT_ACCOUNT
+            "receiver account": rec
             #"raw_ocr_preview": raw_text[:1000]
         }
 
