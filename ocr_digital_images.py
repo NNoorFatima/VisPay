@@ -16,9 +16,12 @@ import pytesseract
 from flask import Flask, request, jsonify
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
+from flask_cors import CORS 
 
 
 app = Flask(__name__)
+CORS(app) 
+
 logging.basicConfig(level=logging.INFO)
 
 # CONFIG
@@ -416,8 +419,13 @@ def calculate_confidence(extracted, chat_amount, email_data, is_fraud, extractio
     email_amt = email_data.get("amount") if email_data else None
     if img_amount == chat_amount and (email_amt is None or img_amount == email_amt):
         score += 40
-    elif fuzz.ratio(str(img_amount), str(chat_amount)) > 90:
-        score += 20
+        logging.info("Amount matches chat and email.")
+    # elif fuzz.ratio(str(img_amount), str(chat_amount)) > 0.1:
+    #     score += 20
+    #     logging.info("Amount matches chat and email.-fuzzy")
+    else:
+        score -= 100  # Penalty for mismatch
+        logging.info(" mismatch with chat/email.")
 
     # Tx ID
     if email_data and fuzz.ratio(img_tid, email_data.get("transaction_id", "")) > 95:
