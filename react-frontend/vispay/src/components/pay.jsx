@@ -98,11 +98,12 @@ export default function PaymentVerification({ onResultChange, onProcessingChange
         status: status,
         confidence: apiResult.confidence,
         data: {
-          extracted_amount: apiResult.extracted_from_receipt?.amount ?? null,
-          chat_amount: apiResult.chat_amount ?? null,
-          transaction_id: apiResult.extracted_from_receipt?.transaction_id ?? null,
-          email_tx_id: apiResult.email_data?.transaction_id ?? null,
-          timestamp: apiResult.extracted_from_receipt?.timestamp ?? null,
+          amount_receipt: apiResult.extracted_from_receipt?.amount ?? null, //amt from receipts
+          chat_amount: apiResult.chat_amount ?? null, //amt from chat
+          tid_receipt: apiResult.extracted_from_receipt?.transaction_id ?? null, //tid from receipt
+          email_tid: apiResult.email_data?.transaction_id ?? null, //tid from email
+          timestamp_from_receipt: apiResult.extracted_from_receipt?.timestamp ?? null, //ts from receipt
+          timestamp_from_chat: apiResult.chat_timestamp ?? null, //ts from chat
           receiver_account: apiResult["receiver account"] ?? null,
           status: apiResult.status,
         },

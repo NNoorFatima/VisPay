@@ -448,7 +448,7 @@ def detect_fraud(image_bytes):
         return True
     return False
 
-def calculate_confidence(extracted, chat_amount, email_data, is_fraud, ocr_score):
+def calculate_confidence(extracted, chat_amount, email_data, is_fraud, ocr_score, chat_timestamp):
     """
     Calculate a confidence score (0-100) for a receipt image verification.
     Returns (confidence_score, status)
@@ -498,11 +498,17 @@ def calculate_confidence(extracted, chat_amount, email_data, is_fraud, ocr_score
     # ----------------- Timestamp check -----------------
     img_ts = extracted.get("timestamp")
     email_ts = email_data.get("timestamp") if email_data else None
+    # Helper to ensure we have datetime objects (re-used below)
+    def parse_ts(ts):
+        if isinstance(ts, str):
+            try:
+                return datetime.datetime.strptime(ts, "%a, %d %b %Y %H:%M:%S %Z")
+            except:
+                return None
+        return ts
+    img_ts = parse_ts(img_ts)
+    email_ts = parse_ts(email_ts)
     if img_ts and email_ts:
-        if isinstance(img_ts, str):
-            img_ts = datetime.datetime.strptime(img_ts, "%a, %d %b %Y %H:%M:%S %Z")
-        if isinstance(email_ts, str):
-            email_ts = datetime.datetime.strptime(email_ts, "%a, %d %b %Y %H:%M:%S %Z")
         delta = abs(img_ts - email_ts)
         if delta <= datetime.timedelta(minutes=5):
             score += MAX_POINTS_TIMESTAMP
@@ -512,6 +518,31 @@ def calculate_confidence(extracted, chat_amount, email_data, is_fraud, ocr_score
             penalty = min(MAX_POINTS_TIMESTAMP, delta.total_seconds() / 60 / 2)  # 1 point per 2 mins
             score -= penalty
         logging.info(f"Timestamp delta: {delta}, score updated: {score}")
+
+    trusted_ts = email_ts if email_ts else img_ts
+    if trusted_ts and chat_timestamp:
+        # Calculate diff: Payment Time - Chat Time
+        # Positive = Payment is after chat (Normal)
+        # Negative = Payment is before chat (Suspicious)
+        time_diff = trusted_ts - chat_timestamp
+        
+        # Buffer: We allow payment to be up to 15 mins BEFORE chat 
+        # (to account for clock skew or user paying while typing)
+        tolerance = datetime.timedelta(minutes=-15) 
+
+        if time_diff >= tolerance:
+            # Payment is fresh (after chat or just before)
+            score += 10 # Bonus for chronological correctness
+            logging.info(f"Causality PASSED: Payment {trusted_ts} is consistent with Chat {chat_timestamp}")
+        else:
+            # Payment is too old (e.g., 2 hours before chat)
+            logging.warning(f"Causality FAILED: Payment {trusted_ts} is older than Chat {chat_timestamp}")
+            score -= 55 # Severe penalty -> Forces Rejection or Manual Review
+            
+    elif not chat_timestamp:
+        logging.info("Skipping Causality Check: No timestamp found in chat.")
+    # ------------------------------------------------------------------
+    
 
     # ----------------- Receiver / Merchant check -----------------
     img_receiver = extracted.get("receiver", "")
@@ -553,75 +584,46 @@ def calculate_confidence(extracted, chat_amount, email_data, is_fraud, ocr_score
         status = "REJECTED"
 
     return score, status
-# def calculate_confidence(extracted, chat_amount, email_data, is_fraud, extraction_score):
-#     """
-#     Calculate confidence score for a given extracted data from receipt image.
 
-#     Confidence score is calculated based on the following factors:
+def get_chat_timestamp(chat_text):
+    """
+    Finds the LAST timestamp mentioned in the chat log.
+    Supported formats (flexible):
+    - [12/10/2025, 10:30 PM]
+    - 12/10/2025, 10:30 am
+    - 2025-10-12 10:30
+    """
+    # Regex to catch Date + Time patterns
+    # Matches: DD/MM/YYYY or YYYY-MM-DD followed by HH:MM (AM/PM)
+    # Adjust regex if your chat logs have a specific weird format
+    pattern = r"(\d{1,4}[/-]\d{1,2}[/-]\d{1,4}).*?(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?)"
+    
+    matches = re.findall(pattern, chat_text)
+    
+    if not matches:
+        return None
 
-#     1. Amount: If the amount from the image matches the chat amount, add 40. If the amount is similar (fuzz ratio > 90), add 20.
-#     2. Tx ID: If the Tx ID from the image matches the Tx ID from the email, add 30.
-#     3. Timestamp: If the timestamp from the image matches the timestamp from the email (within 5 minutes), add 20. If the timestamp is within the TIMESTAMP_DELTA, add 10.
-#     4. Receiver: If the receiver name from the image matches the merchant account name, add 10.
-#     If the email data is not provided, subtract 20 from the score.
-#     The final confidence score is capped at 100.
-#     Returns a tuple of (confidence_score, status) where status can be one of the following:
-
-#     APPROved: Confidence score >= CONFIDENCE_THRESHOLD_APPROVE
-#     manual_review: Confidence score >= CONFIDENCE_THRESHOLD_REVIEW
-#     rejected: Confidence score < CONFIDENCE_THRESHOLD_REVIEW
-
-#     :param extracted: Extracted data from receipt image
-#     :param chat_amount: Amount from chat
-#     :param email_data: Email data
-#     :param is_fraud: Whether the email is suspected to be fraudulent
-#     :param extraction_score: Extraction score from OCR
-#     :return: Tuple of (confidence_score, status)
-#     """
-#     score = extraction_score
-#     if is_fraud:
-#         return 0, "Fraud detected"
-
-#     img_amount = extracted.get("amount", 0)
-#     img_tid = extracted.get("transaction_id", "")
-#     img_ts = extracted.get("timestamp", None)
-#     img_receiver = extracted.get("receiver", "")
-
-#     # Amount
-#     email_amt = email_data.get("amount") if email_data else None
-#     if img_amount == chat_amount and (email_amt is None or img_amount == email_amt): #map image amt with chat amt && email amt with image amt
-#         score += 40
-#         logging.info("Amount matches chat and email.")
-#     # elif fuzz.ratio(str(img_amount), str(chat_amount)) > 0.1:
-#     #     score += 20
-#     #     logging.info("Amount matches chat and email.-fuzzy")
-#     else:
-#         score -= 100  # Penalty for mismatch
-#         logging.info(" mismatch with chat/email.")
-
-#     # Tx ID
-#     if email_data and fuzz.ratio(img_tid, email_data.get("transaction_id", "")) > 95:
-#         score += 30
-
-#     # Timestamp
-#     if img_ts and email_data and email_data.get("timestamp"):
-#         delta = abs(img_ts - email_data["timestamp"])
-#         if delta <= datetime.timedelta(minutes=5):
-#             score += 20
-#         elif delta <= TIMESTAMP_DELTA:
-#             score += 10
-
-#     # Receiver
-#     if fuzz.partial_ratio(img_receiver, MERCHANT_ACCOUNT) > 80:
-#         score += 10
-
-#     if not email_data:
-#         score -= 20  # Penalty for no email
-
-#     status = "APPROVED" if score >= CONFIDENCE_THRESHOLD_APPROVE else \
-#              "MANUAL REVIEW" if score >= CONFIDENCE_THRESHOLD_REVIEW else "REJECTED"
-#     return min(score, 100), status
-
+    # We take the LAST match because that represents the "current" time of the conversation
+    last_date, last_time = matches[-1]
+    full_str = f"{last_date} {last_time}"
+    
+    # Try parsing common formats
+    formats = [
+        "%d/%m/%Y %I:%M %p",  # 25/12/2025 10:30 PM
+        "%d/%m/%Y %H:%M",     # 25/12/2025 14:30
+        "%m/%d/%Y %I:%M %p",  # 12/25/2025 10:30 PM
+        "%Y-%m-%d %H:%M",     # 2025-12-25 14:30
+        "%Y/%m/%d %I:%M %p"   # 2025/12/25 10:30 PM
+    ]
+    
+    for fmt in formats:
+        try:
+            return datetime.datetime.strptime(full_str, fmt)
+        except ValueError:
+            continue
+            
+    logging.warning(f"Could not parse chat timestamp string: {full_str}")
+    return None
 @app.route("/verify_payment", methods=["POST"])
 def verify_payment():
     try:
@@ -641,6 +643,7 @@ def verify_payment():
             return jsonify({"error": "Could not read receipt clearly. Please send a clearer screenshot.", "raw_text": raw_text[:1000]}), 400
 
         chat_amount = parse_chat_amount(chat_text)
+        chat_ts = get_chat_timestamp(chat_text) # <--- NEW STEP
         if not chat_amount:
             return jsonify({"error": "Could not determine order amount from chat"}), 400
 
@@ -655,14 +658,15 @@ def verify_payment():
 
         is_fraud = detect_fraud(image_bytes)
 
-        score, status = calculate_confidence(extracted, chat_amount, email_data, is_fraud, extraction_conf)
+        score, status = calculate_confidence(extracted, chat_amount, email_data, is_fraud, extraction_conf, chat_timestamp=chat_ts)
 
         response = {
             "status": status,
             "confidence": score,
-            "extracted_from_receipt": extracted,
+            "chat_timestamp": chat_ts,
+            "extracted_from_receipt": extracted, #amt, receiver, timestamp, tid
             "chat_amount": chat_amount,
-            "email_data": email_data,
+            "email_data": email_data, #amt, tid, timestamp
             "fraud_detected": is_fraud,
             "receiver account": rec
             #"raw_ocr_preview": raw_text[:1000]
