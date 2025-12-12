@@ -10,6 +10,7 @@ import {
   Check,
   Info,
   Settings,
+  FileText,
 } from "lucide-react";
 import { verifyPayment, getImageUrl } from "../services/api";
 
@@ -26,6 +27,11 @@ const PREPROCESSING_METHODS = [
 export default function PaymentVerification({ onResultChange, onProcessingChange }) {
   const [image, setImage] = useState(null);
   const [imageFile, setImageFile] = useState(null);
+  
+  // New State for Mode and Chat File
+  const [verificationMode, setVerificationMode] = useState("standard"); // 'standard' or 'digital'
+  const [chatFile, setChatFile] = useState(null);
+
   const [isProcessing, setIsProcessing] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
@@ -47,43 +53,88 @@ export default function PaymentVerification({ onResultChange, onProcessingChange
         setImageFile(file);
         setResult(null);
         setError(null);
-        processReceipt(file);
+        
+        // Only auto-process in Standard mode. In Digital mode, we wait for Chat file.
+        if (verificationMode === "standard") {
+            processReceipt(file, null);
+        }
       };
       reader.readAsDataURL(file);
     }
   };
 
-  const processReceipt = async (file) => {
+  const handleChatUpload = (e) => {
+      const file = e.target.files?.[0];
+      if (file) {
+          setChatFile(file);
+          setError(null);
+      }
+  };
+
+  const handleVerifyClick = () => {
+      if (imageFile) {
+          processReceipt(imageFile, chatFile);
+      }
+  };
+
+  const processReceipt = async (file, cFile) => {
     updateProcessingState(true);
     setError(null);
     onResultChange?.(null);
 
     try {
       const startTime = Date.now();
-      const apiResult = await verifyPayment(file, preprocessingMethod);
+      
+      // Call API with all necessary params including mode
+      const apiResult = await verifyPayment(file, cFile, preprocessingMethod, verificationMode);
       const processingTime = Date.now() - startTime;
 
-      // Transform API response to frontend format
-      const verificationResult = {
-        type: "payment",
-        status: apiResult.verification_status === "verified" ? "success" : 
-                apiResult.verification_status === "partial" ? "partial" : "failed",
-        confidence: apiResult.verification_status === "verified" ? 95 : 
-                   apiResult.verification_status === "partial" ? 70 : 30,
-        processingTime,
-        data: {
-          "Transaction ID": apiResult.transaction_id || "Not found",
-          "Amount": apiResult.amount || "Not found",
-          "Date": apiResult.date || "Not found",
-          "Verification Status": apiResult.verification_status || "unknown",
-          "Extraction Method": apiResult.extraction_method || "N/A",
-          "Preprocessing Method": apiResult.preprocessing_method || "N/A",
-          "Auto Selected": apiResult.auto_selected ? "Yes" : "No",
-        },
-        apiResult, // Store full API result for detailed view
-        processedImageUrl: apiResult.processed_image_url ? getImageUrl(apiResult.processed_image_url) : null,
-      };
+      let verificationResult;
 
+      // NORMALIZE THE DATA based on the source
+      if (apiResult._source === 'digital') {
+          // --- FLASK RESPONSE MAPPING ---
+          verificationResult = {
+            type: "payment",
+            status: apiResult.status === "APPROVED" ? "success" : 
+                    apiResult.status === "MANUAL REVIEW" ? "partial" : "failed",
+            confidence: apiResult.confidence,
+            processingTime,
+            data: {
+              "Status": apiResult.status,
+              "Transaction ID": apiResult.extracted_from_receipt?.transaction_id || "Not found",
+              "Amount (Receipt)": apiResult.extracted_from_receipt?.amount || "Not found",
+              "Amount (Chat)": apiResult.chat_amount || "Not found",
+              "Email Verified": apiResult.email_data ? "Yes" : "No",
+              "Fraud Detected": apiResult.fraud_detected ? "Yes" : "No",
+              "Receiver": apiResult.extracted_from_receipt?.receiver || "Not found",
+            },
+            apiResult, // Keep full result for advanced debugging if needed
+          };
+      } else {
+          // --- FASTAPI RESPONSE MAPPING ---
+          verificationResult = {
+            type: "payment",
+            status: apiResult.verification_status === "verified" ? "success" : 
+                    apiResult.verification_status === "partial" ? "partial" : "failed",
+            confidence: apiResult.verification_status === "verified" ? 95 : 
+                       apiResult.verification_status === "partial" ? 70 : 30,
+            processingTime,
+            data: {
+              "Transaction ID": apiResult.transaction_id || "Not found",
+              "Amount": apiResult.amount || "Not found",
+              "Date": apiResult.date || "Not found",
+              "Verification Status": apiResult.verification_status || "unknown",
+              "Extraction Method": apiResult.extraction_method || "N/A",
+              "Preprocessing Method": apiResult.preprocessing_method || "N/A",
+              "Auto Selected": apiResult.auto_selected ? "Yes" : "No",
+            },
+            apiResult, 
+            processedImageUrl: apiResult.processed_image_url ? getImageUrl(apiResult.processed_image_url) : null,
+          };
+      }
+
+      // Add common extra fields if they exist
       if (apiResult.llm_corrections) {
         verificationResult.data["LLM Corrections"] = Object.keys(apiResult.llm_corrections).length + " fields corrected";
       }
@@ -115,19 +166,48 @@ export default function PaymentVerification({ onResultChange, onProcessingChange
 
   const handleRetry = () => {
     if (imageFile) {
-      processReceipt(imageFile);
+      processReceipt(imageFile, chatFile);
     }
   };
 
   return (
     <div className="p-8">
       <div className="max-w-2xl mx-auto">
+        
+        {/* --- MODE SELECTION --- */}
+        <div className="mb-6 flex gap-4 bg-secondary/30 p-1.5 rounded-lg border border-border">
+            <button 
+                onClick={() => { setVerificationMode("standard"); setResult(null); setError(null); }}
+                disabled={isProcessing}
+                className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-all ${
+                    verificationMode === "standard" 
+                    ? "bg-primary text-white shadow-sm" 
+                    : "text-muted-foreground hover:bg-primary/10 hover:text-foreground"
+                }`}
+            >
+                Standard OCR (Image Only)
+            </button>
+            <button 
+                onClick={() => { setVerificationMode("digital"); setResult(null); setError(null); }}
+                disabled={isProcessing}
+                className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-all ${
+                    verificationMode === "digital" 
+                    ? "bg-primary text-white shadow-sm" 
+                    : "text-muted-foreground hover:bg-primary/10 hover:text-foreground"
+                }`}
+            >
+                Digital Verification (Image + Chat)
+            </button>
+        </div>
+
         {/* Method Information Panel */}
         <div className="mb-6 p-4 bg-card border border-border rounded-lg">
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
               <Info className="w-5 h-5 text-primary" />
-              <h3 className="font-semibold text-foreground">Payment Verification Method</h3>
+              <h3 className="font-semibold text-foreground">
+                  {verificationMode === "standard" ? "Standard Payment Verification" : "Digital Cross-Verification"}
+              </h3>
             </div>
             <button
               onClick={() => setShowMethodInfo(!showMethodInfo)}
@@ -138,17 +218,26 @@ export default function PaymentVerification({ onResultChange, onProcessingChange
           </div>
           {showMethodInfo && (
             <div className="mt-3 space-y-2 text-sm text-muted-foreground">
-              <p>• Uses OCR (Optical Character Recognition) to extract text from receipt images</p>
-              <p>• Supports multiple preprocessing methods to enhance image quality</p>
-              <p>• Validates extracted data (transaction ID, amount, date)</p>
-              <p>• Optional LLM validation for intelligent field correction</p>
-              <p>• Detects image manipulation and quality issues</p>
+                {verificationMode === "standard" ? (
+                    <>
+                        <p>• Uses OCR (Optical Character Recognition) to extract text from receipts</p>
+                        <p>• Supports multiple preprocessing methods to enhance image quality</p>
+                        <p>• Validates transaction ID, amount, and date against regex patterns</p>
+                    </>
+                ) : (
+                    <>
+                        <p>• Cross-references Receipt OCR data with Chat Logs</p>
+                        <p>• Verifies email confirmation from Gmail (if configured)</p>
+                        <p>• Detects fraud/tampering using edge detection</p>
+                        <p>• Calculates a confidence score based on matching data points</p>
+                    </>
+                )}
             </div>
           )}
         </div>
 
-        {/* Preprocessing Method Selection */}
-        {image && (
+        {/* Preprocessing Method Selection (Standard Mode Only) */}
+        {verificationMode === "standard" && image && (
           <div className="mb-6 p-4 bg-secondary/30 border border-border rounded-lg">
             <label className="block text-sm font-semibold text-foreground mb-2">
               Preprocessing Method
@@ -159,7 +248,7 @@ export default function PaymentVerification({ onResultChange, onProcessingChange
                 const value = e.target.value || null;
                 setPreprocessingMethod(value);
                 if (imageFile && !isProcessing) {
-                  processReceipt(imageFile);
+                  processReceipt(imageFile, null);
                 }
               }}
               disabled={isProcessing}
@@ -202,35 +291,59 @@ export default function PaymentVerification({ onResultChange, onProcessingChange
                 alt="Receipt"
                 className="w-full max-h-96 object-contain rounded-lg border border-border"
               />
+
+              {/* CHAT FILE UPLOAD (Only for Digital Mode) */}
+              {verificationMode === "digital" && (
+                  <div className="mt-4 p-4 border border-dashed border-primary/40 rounded-lg bg-primary/5">
+                      <div className="flex items-center gap-4">
+                          <FileText className="w-8 h-8 text-primary flex-shrink-0"/>
+                          <div className="flex-1 overflow-hidden">
+                              <p className="text-sm font-semibold">Upload Chat Log</p>
+                              <p className="text-xs text-muted-foreground truncate">
+                                  {chatFile ? chatFile.name : "Required for digital verification (.txt)"}
+                              </p>
+                          </div>
+                          <label className="px-4 py-2 text-sm bg-secondary hover:bg-secondary/80 rounded-lg cursor-pointer whitespace-nowrap">
+                              {chatFile ? "Change" : "Browse"}
+                              <input type="file" accept=".txt" className="hidden" onChange={handleChatUpload} />
+                          </label>
+                      </div>
+                  </div>
+              )}
+
               <div className="mt-4 flex gap-2">
                 <button
                   onClick={() => {
                     setImage(null);
                     setImageFile(null);
+                    setChatFile(null);
                     setResult(null);
                     setError(null);
                     onResultChange?.(null);
                   }}
+                  disabled={isProcessing}
                   className="flex-1 px-4 py-2 text-sm text-primary hover:bg-primary/10 rounded-lg border border-primary/30 transition-colors"
                 >
                   Upload Different Receipt
                 </button>
-                {result && (
-                  <button
-                    onClick={handleRetry}
-                    disabled={isProcessing}
-                    className="px-4 py-2 text-sm bg-primary text-primary-foreground rounded-lg hover:opacity-90 transition-opacity disabled:opacity-50"
-                  >
-                    Retry
-                  </button>
+                
+                {/* DYNAMIC VERIFY/RETRY BUTTON */}
+                {(verificationMode === "digital" || result) && (
+                    <button
+                        onClick={result ? handleRetry : handleVerifyClick}
+                        disabled={isProcessing || (verificationMode === "digital" && !chatFile)}
+                        className="px-4 py-2 text-sm bg-primary text-primary-foreground rounded-lg hover:opacity-90 transition-opacity disabled:opacity-50 min-w-[100px]"
+                    >
+                        {isProcessing ? "Verifying..." : result ? "Retry" : "Verify Receipt"}
+                    </button>
                 )}
               </div>
             </div>
 
             {error && (
-              <div className="mb-6 p-4 bg-primary/10 border-2 border-primary/30 rounded-lg">
+              <div className="mb-6 p-4 bg-red-500/10 border-2 border-red-500/30 rounded-lg">
                 <div className="flex items-center gap-3">
-                  <AlertCircle className="w-5 h-5 text-primary flex-shrink-0" />
+                  <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0" />
                   <div>
                     <p className="font-semibold text-foreground">
                       Verification Failed
@@ -253,20 +366,20 @@ export default function PaymentVerification({ onResultChange, onProcessingChange
             )}
 
             {result && !isProcessing && (
-              <div className="space-y-6">
+              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
                 <div
                   className={`flex items-center gap-3 p-4 rounded-lg border-2 ${
                     result.status === "success"
-                      ? "bg-primary/10 border-primary"
+                      ? "bg-green-500/10 border-green-500/50"
                       : result.status === "partial"
-                      ? "bg-primary/10 border-primary/50"
-                      : "bg-primary/10 border-primary/30"
+                      ? "bg-yellow-500/10 border-yellow-500/50"
+                      : "bg-red-500/10 border-red-500/50"
                   }`}
                 >
                   {result.status === "success" ? (
-                    <CheckCircle2 className="w-6 h-6 text-primary flex-shrink-0" />
+                    <CheckCircle2 className="w-6 h-6 text-green-500 flex-shrink-0" />
                   ) : (
-                    <AlertCircle className="w-6 h-6 text-primary flex-shrink-0" />
+                    <AlertCircle className={`w-6 h-6 flex-shrink-0 ${result.status === "partial" ? "text-yellow-500" : "text-red-500"}`} />
                   )}
                   <div>
                     <p className="font-semibold text-foreground">
@@ -275,7 +388,7 @@ export default function PaymentVerification({ onResultChange, onProcessingChange
                        result.status === "partial" ? "Partially Verified" : "Failed"}
                     </p>
                     <p className="text-sm text-muted-foreground">
-                      Confidence: {result.confidence}%
+                      Confidence: {Math.round(result.confidence)}%
                     </p>
                   </div>
                 </div>
@@ -305,6 +418,7 @@ export default function PaymentVerification({ onResultChange, onProcessingChange
                   ))}
                 </div>
 
+                {/* Show LLM Corrections if available */}
                 {result.apiResult?.llm_corrections && (
                   <div className="p-4 bg-primary/10 border border-primary/30 rounded-lg">
                     <p className="text-sm font-semibold text-foreground mb-2">
@@ -321,6 +435,7 @@ export default function PaymentVerification({ onResultChange, onProcessingChange
                   </div>
                 )}
 
+                {/* Footer details */}
                 <div className="space-y-2 p-4 bg-secondary/20 rounded-lg">
                   <p className="text-sm font-semibold text-foreground mb-3">
                     Verification Details
@@ -329,13 +444,7 @@ export default function PaymentVerification({ onResultChange, onProcessingChange
                     <div className="flex items-center gap-2">
                       <CheckCircle2 className="w-4 h-4 text-primary flex-shrink-0" />
                       <span className="text-foreground">
-                        Extraction Method: {result.data["Extraction Method"]}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <CheckCircle2 className="w-4 h-4 text-primary flex-shrink-0" />
-                      <span className="text-foreground">
-                        Preprocessing: {result.data["Preprocessing Method"]}
+                        Source: {verificationMode === "digital" ? "Digital (Flask)" : "Standard (FastAPI)"}
                       </span>
                     </div>
                     {result.processingTime && (
