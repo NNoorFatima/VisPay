@@ -1,5 +1,5 @@
 """
-Payment verification routes.
+Payment verification routes. -- scanned receipts
 """
 from fastapi import APIRouter, File, UploadFile, HTTPException, Query
 import cv2

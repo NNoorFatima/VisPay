@@ -6,6 +6,7 @@ __pycache__/
 # Virtual environments
 venv/
 env/
+ocrvenv/
 ENV/
 .venv/
 .python-version
@@ -28,6 +29,8 @@ static/product_images_3
 
 archive/
 data/
+chats/
+models/
 
 # OS files
 .DS_Store

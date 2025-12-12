@@ -6,7 +6,7 @@ import PaymentVerification from "./components/PaymentVerfication";
 import ProductSearch from "./components/ProductSearch";
 import Navigation from "./components/Navigation";
 import ResultsPanel from "./components/ResultsPanel";
-
+import Payment from "./components/pay"; // <--- Add this line
 function PaymentPage({ onResultChange, onProcessingChange }) {
   return (
     <div className="p-8">
@@ -20,6 +20,26 @@ function PaymentPage({ onResultChange, onProcessingChange }) {
       </div>
       <div className="bg-card rounded-xl border border-border shadow-lg overflow-hidden">
         <PaymentVerification
+          onResultChange={onResultChange}
+          onProcessingChange={onProcessingChange}
+        />
+      </div>
+    </div>
+  );
+}
+function PaymentDigitalPage({ onResultChange, onProcessingChange }) {
+  return (
+    <div className="p-8">
+      <div className="mb-8">
+        <h1 className="text-4xl md:text-5xl font-bold text-foreground mb-2">
+          Payment Verification
+        </h1>
+        <p className="text-base text-muted-foreground max-w-2xl">
+          Verify payment receipts using OCR and detect fraudulent documents
+        </p>
+      </div>
+      <div className="bg-card rounded-xl border border-border shadow-lg overflow-hidden">
+        <Payment // <--- This component is now available
           onResultChange={onResultChange}
           onProcessingChange={onProcessingChange}
         />
@@ -64,7 +84,11 @@ export default function App() {
             <Route
               path="/payment"
               element={
-                <PaymentPage
+                // <PaymentPage
+                //   onResultChange={setProcessedResult}
+                //   onProcessingChange={setIsProcessing}
+                // />
+                <PaymentDigitalPage // <--- CHANGED HERE
                   onResultChange={setProcessedResult}
                   onProcessingChange={setIsProcessing}
                 />
