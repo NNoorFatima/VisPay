@@ -1,4 +1,4 @@
-# VisPay Vision API
+# VisPay
 
 A FastAPI-based dual image intelligence system for payment verification and visual product search in live commerce platforms.
 
