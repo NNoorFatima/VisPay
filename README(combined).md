@@ -79,7 +79,7 @@ source venv/bin/activate  # Windows: venv\Scripts\activate
 ```bash
 pip install --upgrade pip
 pip install -r requirementsOCR.txt  #for digital ocr 
-pip install -r requirementsVS.txt  #for Visual search 
+pip install -r requirementVS.txt  #for Visual search 
 pip install -r requirementsEval.txt  #for evaluation of visual search
 pip install -r requirements.txt #for scanned receipt (mode A) ocr
 ```
@@ -130,8 +130,6 @@ To utilize the full features, you must run both the FastAPI and Flask servers.
     * Handles Standard OCR and Visual Search.
     ```bash
     python main.py 
-    python ocr_digital_images.py
-    npm run dev # to run frontend 
     ```
 2. Start Digital Verification Service (Flask)
     ```bash 

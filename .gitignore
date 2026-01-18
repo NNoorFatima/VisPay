@@ -6,11 +6,12 @@ __pycache__/
 # Virtual environments
 venv/
 env/
-ocrvenv/
 evalVenv/
 ENV/
 .venv/
 .python-version
+venvOCR/
+venvVS/
 
 # Environment variables
 *.env

@@ -313,6 +313,7 @@ def get_access_token():
     }
 
     token_resp = requests.post(creds["token_uri"], data=data)
+    # print(token_resp.text)
     token_resp.raise_for_status()
     access_token = token_resp.json()["access_token"]
     # logging.info("Access token obtained successfully.")
