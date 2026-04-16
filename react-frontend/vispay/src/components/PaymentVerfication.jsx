@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState,useEffect } from "react";
 import {
   Upload,
   CheckCircle2,
@@ -38,6 +38,38 @@ export default function PaymentVerification({ onResultChange, onProcessingChange
   const [copied, setCopied] = useState(false);
   const [preprocessingMethod, setPreprocessingMethod] = useState(null);
   const [showMethodInfo, setShowMethodInfo] = useState(false);
+  const [paymentUpdate, setPaymentUpdate] = useState(null); // { status, message }
+
+  // Params passed from WordPress
+  const [visPayParams, setVisPayParams] = useState({ customerId: null, sellerId: null, mwUrl: null, mwKey: null });
+
+  useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const encodedChat = urlParams.get("chat");
+    const customerId  = urlParams.get("customerId");
+    const sellerId    = urlParams.get("sellerId");
+    const mwUrl       = urlParams.get("mwUrl");
+    const mwKey       = urlParams.get("mwKey");
+
+    setVisPayParams({ customerId, sellerId, mwUrl, mwKey });
+
+    if (encodedChat) {
+        try {
+            const chatContent = atob(encodedChat);
+            console.group('[VisPay] Chat content loaded from URL:');
+            console.log(chatContent);
+            console.groupEnd();
+            const chatBlob = new Blob([chatContent], { type: 'text/plain' });
+            const chatFile = new File([chatBlob], "chat.txt", { type: "text/plain" });
+            setChatFile(chatFile);
+            setVerificationMode("digital");
+        } catch (err) {
+            console.error("Failed to decode chat from URL", err);
+        }
+    }
+}, []);
+
+
 
   const updateProcessingState = (processing) => {
     setIsProcessing(processing);
@@ -80,6 +112,7 @@ export default function PaymentVerification({ onResultChange, onProcessingChange
   const processReceipt = async (file, cFile) => {
     updateProcessingState(true);
     setError(null);
+    setPaymentUpdate(null);
     onResultChange?.(null);
 
     try {
@@ -145,6 +178,32 @@ export default function PaymentVerification({ onResultChange, onProcessingChange
 
       setResult(verificationResult);
       onResultChange?.(verificationResult);
+
+      // Auto-update payment status in the database if we have the required params
+      if (apiResult._source === 'digital' && visPayParams.customerId && visPayParams.sellerId && visPayParams.mwUrl && visPayParams.mwKey) {
+        try {
+          const chatAmt   = apiResult.chat_amount;
+          const visStatus = apiResult.status; // APPROVED | REJECTED | MANUAL REVIEW
+          const updateRes = await fetch(`${visPayParams.mwUrl}/payments/verify-and-update`, {
+            method:  'PUT',
+            headers: { 'Content-Type': 'application/json', 'x-api-key': visPayParams.mwKey },
+            body:    JSON.stringify({
+              customerUserMongoId: visPayParams.customerId,
+              sellerUserMongoId:   visPayParams.sellerId,
+              chatAmount:          chatAmt,
+              visPayStatus:        visStatus,
+            }),
+          });
+          const updateJson = await updateRes.json();
+          if (updateJson.success) {
+            setPaymentUpdate({ ok: true, message: `Payment marked as "${updateJson.newStatus}" (Rs.${updateJson.matchedAmount})` });
+          } else {
+            setPaymentUpdate({ ok: false, message: updateJson.error || 'Could not update payment record.' });
+          }
+        } catch (e) {
+          setPaymentUpdate({ ok: false, message: 'Could not reach middleware to update payment.' });
+        }
+      }
     } catch (err) {
       setError(err.message || "Failed to verify receipt");
       const errorResult = {
@@ -319,6 +378,7 @@ export default function PaymentVerification({ onResultChange, onProcessingChange
                     setChatFile(null);
                     setResult(null);
                     setError(null);
+                    setPaymentUpdate(null);
                     onResultChange?.(null);
                   }}
                   disabled={isProcessing}
@@ -431,6 +491,26 @@ export default function PaymentVerification({ onResultChange, onProcessingChange
                           <span>{correction}</span>
                         </div>
                       ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Payment record update banner */}
+                {paymentUpdate && (
+                  <div className={`flex items-start gap-3 p-4 rounded-lg border-2 ${
+                    paymentUpdate.ok
+                      ? "bg-green-500/10 border-green-500/40"
+                      : "bg-yellow-500/10 border-yellow-500/40"
+                  }`}>
+                    {paymentUpdate.ok
+                      ? <CheckCircle2 className="w-5 h-5 text-green-500 flex-shrink-0 mt-0.5" />
+                      : <AlertCircle  className="w-5 h-5 text-yellow-500 flex-shrink-0 mt-0.5" />
+                    }
+                    <div>
+                      <p className="font-semibold text-foreground text-sm">
+                        {paymentUpdate.ok ? "Payment Record Updated" : "Payment Record Warning"}
+                      </p>
+                      <p className="text-xs text-muted-foreground mt-0.5">{paymentUpdate.message}</p>
                     </div>
                   </div>
                 )}

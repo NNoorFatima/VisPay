@@ -286,16 +286,17 @@ def parse_chat_amount(chat_text):
     """
     text = chat_text.lower()
     patterns = [
-        r"final[^\d]*([\d,]+)",
-        r"total[^\d]*([\d,]+)",
-        r"([\d,]+)\s*pkr",
+        r"\bfinal\b[^\d]*([\d,]+)",
+        r"\btotal\b[^\d]*([\d,]+)",
+        r"([\d,]+)\s*pkr\b",
         r"ban[ae]ga\s*([\d,]+)",
         r"([\d,]+)\s*rupees?",
     ]
     for p in patterns:
-        match = re.search(p, text)
-        if match:
-            return int(match.group(1).replace(",", ""))
+        # Use findall and take the LAST match — the most recent total/amount in the chat
+        matches = re.findall(p, text)
+        if matches:
+            return int(matches[-1].replace(",", ""))
     return None
 
 def get_access_token():
